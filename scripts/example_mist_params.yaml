@@ -1,0 +1,262 @@
+# example_mixed_ice_1p1d_params.yaml
+#
+# Run with:
+#   python mixed_ice_transport_1p1d.py example_mixed_ice_1p1d_params.yaml
+#
+# This is version 1.3:
+#   - 1D radial Eulerian volatile transport
+#   - fixed H2/He gas disk
+#   - two solid carriers: pebbles + small grains
+#   - vertical snow surfaces via T(r,z) and shielding A_V(r,z)
+#   - phase source terms use carrier-weighted vertical survival fractions
+#
+# Volatile total_mass_fraction values are mass fractions relative to the fixed
+# background gas surface density, not additions to Sigma_g.
+
+simulation:
+  name: mixed_ice_1p1d_example
+  output_dir: mixed_ice_1p1d_outputs_example
+  t_end_yr: 100000.0
+
+  # If save_interval_yr is null, save_interval_fraction is used.
+  # 0.01 means snapshots every 1% of total simulation time.
+  save_interval_yr:
+  save_interval_fraction: 0.01
+
+  overwrite: true
+  progress_every: 200
+
+grid:
+  r_in_au: 0.5
+  r_out_au: 300.0
+  n_cells: 400
+  spacing: log
+
+star:
+  M_star_msun: 1.0
+
+gas:
+  # Fixed H2/He gas disk mass between r_in and r_out.
+  M_gas_msun: 0.05
+
+  # powerlaw or tapered_powerlaw
+  surface_density_profile: tapered_powerlaw
+  p: 1.0
+  r_c_au: 100.0
+
+  temperature:
+    # Midplane temperature:
+    # T_mid(r) = max(T_floor_K, T0_K * (r / r0_au)^(-q))
+    T0_K: 150.0
+    r0_au: 1.0
+    q: 0.5
+    T_floor_K: 10.0
+
+  alpha: 0.001
+  mu: 2.381
+  schmidt_gas: 1.0
+
+  # viscous, zero, or constant
+  velocity_mode: viscous
+  constant_v_g_cm_s: 0.0
+
+  # update gas surface density
+  update_gas: true
+
+dust:
+  carriers:
+    pebble:
+      # Pebbles dominate volatile mass transport.
+      # constant or epstein
+      stokes_mode: constant
+      St: 0.03
+
+      # Used only if stokes_mode: epstein
+      grain_size_cm: 0.1
+      rho_s_g_cm3: 1.5
+
+      schmidt: 1.0
+      include_diffusion: true
+      refractory_to_gas: 0.0045
+
+    small:
+      # Small grains are nearly gas-coupled and vertically extended.
+      # These are meant as the JWST-observable ice carrier.
+      stokes_mode: constant
+      St: 0.0001
+
+      # Used only if stokes_mode: epstein
+      grain_size_cm: 0.0001
+      rho_s_g_cm3: 1.5
+
+      schmidt: 1.0
+      include_diffusion: true
+      refractory_to_gas: 0.0005
+
+  # How volatile reservoirs are divided between carriers in the cold-limit
+  # phase equilibrium. Must sum to 1.
+  volatile_carrier_fractions:
+    pebble: 0.90
+    small: 0.10
+
+  phase_partition:
+    preserve_carrier_history: true
+
+  # Backreaction
+  backreaction:
+    enabled: false
+
+    # midplane is more physically relevant for settled pebbles.
+    # column is more conservative.
+    epsilon_mode: midplane
+
+    # Start by including pebble feedback only.
+    include_small: false
+
+    # Prevent tiny gas columns or very small Hd/Hg from producing pathological velocities.
+    epsilon_cap: 10.0
+    sigma_floor: 1.0e-300
+
+vertical:
+  enabled: true
+  n_z: 128
+  zmax_H: 5.0
+
+  # Dust scale height prescription:
+  # Hd/Hg = sqrt(alpha_z / (alpha_z + St))
+  alpha_z: 0.001
+
+  temperature:
+    enabled: true
+
+    # T_atm = T_atm_factor * T_mid.
+    # This is deliberately simple; vary this in suites.
+    T_atm_factor: 2.0
+
+    # Vertical transition height in units of gas scale height.
+    zq_H: 2.0
+    power: 2.0
+
+  shielding:
+    enabled: true
+
+    # Approximate A_V per one-sided gas column [g cm^-2].
+    # ISM-like value is ~200-230, but disk grains can differ.
+    Av_per_g_cm2: 228.0
+    Av_crit: 1.0
+    Av_width: 0.3
+    apply_to_phase: true
+
+  # Snow surface is reported where the survival probability crosses this value.
+  snow_surface_threshold: 0.5
+
+volatiles:
+  include_vapor_diffusion: true
+  phase_relaxation_time_yr: 1.0
+
+  CO:
+    total_mass_fraction: 0.002
+
+    # Cold-limit fractions of total CO inventory assigned to each solid
+    # reservoir. Must sum to <= 1.
+    solid_fractions:
+      pure: 0.40
+      at_CO2: 0.40
+      at_H2O: 0.20
+
+    # Effective release/re-equilibration temperatures, not full lab kinetics.
+    release_temperatures_K:
+      pure: 25.0
+      at_CO2: 70.0
+      at_H2O: 130.0
+
+    transition_widths_K:
+      pure: 3.0
+      at_CO2: 6.0
+      at_H2O: 10.0
+
+  CO2:
+    total_mass_fraction: 0.001
+
+    # Includes CO2@H2O.
+    solid_fractions:
+      pure: 0.75
+      at_H2O: 0.25
+
+    release_temperatures_K:
+      pure: 70.0
+      at_H2O: 130.0
+
+    transition_widths_K:
+      pure: 6.0
+      at_H2O: 10.0
+
+  H2O:
+    total_mass_fraction: 0.005
+    release_temperature_K: 150.0
+    transition_width_K: 10.0
+
+  trapping_capacity:
+    enabled: true
+
+    # Prevent numerical floors from making a reservoir look available everywhere.
+    availability_relative_floor: 1.0e-12
+    availability_abs_floor: 1.0e-300
+
+    # Options:
+    #   gas
+    #     Excess guest material is returned directly to gas.
+    #
+    #   next_available_reservoir
+    #     Excess guest material first tries another same-species solid reservoir
+    #     that is locally available and not over capacity; any leftover goes to gas.
+    # excess_destination: next_available_reservoir
+    excess_destination: gas
+
+    # Ignore capacity constraints where the host reservoir is effectively absent.
+    host_floor: 1.0e-300
+
+    CO_at_CO2:
+      # Maximum N_CO / N_CO2 allowed in CO2-associated ice.
+      # 1.0 means at most one CO molecule per CO2 molecule.
+      max_guest_per_host_mol: 0.5
+
+      # Options:
+      #   pure_CO2_ice    -> host is only CO2_pure_ice
+      #   total_CO2_ice   -> host is CO2_pure_ice + CO2_at_H2O_ice
+      host_mode: pure_CO2_ice
+      # host_mode: total_CO2_ice
+
+    CO_at_H2O:
+      # Maximum N_CO / N_H2O allowed in H2O-associated ice.
+      max_guest_per_host_mol: 0.25
+
+    CO2_at_H2O:
+      # Maximum N_CO2 / N_H2O allowed in H2O-associated ice.
+      max_guest_per_host_mol: 0.5
+
+    H2O_total_guest_capacity:
+      # Optional total cap on all guests in H2O ice:
+      # (N_CO@H2O + N_CO2@H2O) / N_H2O.
+      # Set to null to disable.
+      max_total_guest_per_host_mol: null
+
+initial_conditions:
+  initialize_phase_equilibrium: true
+
+output:
+  save_1d_csv: true
+
+  # 2D files are compressed npz. They reconstruct the vertical distribution
+  # of the reservoirs and include snow surfaces, survival maps, A_V, and T(r,z).
+  save_2d_npz: true
+  save_2d_every_n_snapshots: 5
+
+numerics:
+  cfl_advective: 0.4
+  cfl_diffusive: 0.2
+  max_timestep_yr: 50.0
+  surface_density_floor: 0.0
+  boundary_condition: outflow
+  clip_negative: true
+  negative_tolerance: 1.0e-40
