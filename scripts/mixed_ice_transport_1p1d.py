@@ -28,7 +28,7 @@ sit vertically, but the transport itself remains 1D radial.
 
 Usage
 -----
-    python mixed_ice_transport_1p1d.py params_1p1d.yaml
+    python mixed_ice_transport_1p1d.py example_mist_params.yaml
 
 Outputs
 -------

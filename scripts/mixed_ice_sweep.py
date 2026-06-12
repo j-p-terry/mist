@@ -20,7 +20,7 @@ Typical use
 Generate YAMLs:
 
     python mixed_ice_sweep.py generate \
-        --base-yaml example_mixed_ice_1p1d_params.yaml \
+        --base-yaml example_mist_params.yaml \
         --sweep-dir sweep_yamls \
         --run-root sweep_outputs \
         --model-script mixed_ice_transport_1p1d.py
