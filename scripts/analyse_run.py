@@ -1,12 +1,12 @@
 """
-analyze_mixed_ice_1p1d.py
+analyze_run.py
 
 Visual analysis for outputs from mixed_ice_transport_1p1d.py.
 
 Usage:
-    python analyze_mixed_ice_1p1d.py mixed_ice_1p1d_outputs_example
-    python analyze_mixed_ice_1p1d.py mixed_ice_1p1d_outputs_example --snap latest
-    python analyze_mixed_ice_1p1d.py mixed_ice_1p1d_outputs_example --snap 10 --skip-2d
+    python analyze_run.py mixed_ice_1p1d_outputs_example
+    python analyze_run.py mixed_ice_1p1d_outputs_example --snap latest
+    python analyze_run.py mixed_ice_1p1d_outputs_example --snap 10 --skip-2d
 
 Outputs are written by default to:
     <output_dir>/analysis_plots/
