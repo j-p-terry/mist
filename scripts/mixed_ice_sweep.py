@@ -34,6 +34,11 @@ Analyze after runs complete:
     python mixed_ice_sweep.py analyze \
         --sweep-dir sweep_yamls \
         --analysis-dir sweep_analysis
+        
+Single command, e.g.:
+python mixed_ice_sweep.py generate --base-yaml example_mist_params.yaml --sweep-dir sweep_yamls --run-root sweep_outputs --model-script mixed_ice_transport_1p1d.py
+bash sweep_yamls/commands.sh
+python mixed_ice_sweep.py analyze --sweep-dir sweep_yamls --analysis-dir sweep_analysis
 
 Outputs from generate
 ---------------------
@@ -90,6 +95,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import matplotlib.pyplot as plt
+from colorspacious import cspace_converter
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.colors as mcolors
+from matplotlib import rc as mplrc
+from matplotlib.colors import ListedColormap, LinearSegmentedColormap, LogNorm, SymLogNorm
 import numpy as np
 import pandas as pd
 import yaml
@@ -106,6 +116,79 @@ MW = {
 }
 
 RELEASE_CHANNELS = ("CO_pure", "CO_at_CO2", "CO_at_H2O")
+
+# ---------------------------------------------------------------------
+# Plotting helpers
+# ---------------------------------------------------------------------
+def hex_to_rgb(value):
+    """Convert hex to RGB values in the range [0, 1]."""
+    value = value.lstrip('#')
+    lv = len(value)
+    return tuple(int(value[i:i + lv // 3], 16) / 255. for i in range(0, lv, lv // 3))
+
+def create_perceptually_uniform_cmap(start_color: list, end_color: list, N: int = 256, return_color: bool = False):
+
+    if type(start_color) is str:
+        start_color = hex_to_rgb(start_color) if "#" in start_color else mcolors.to_rgb(start_color)
+    if type(end_color) is str:
+        end_color = hex_to_rgb(end_color) if "#" in end_color else mcolors.to_rgb(end_color)
+    # Convert the start and end colors from RGB to LAB color space
+    converter = cspace_converter("sRGB1", "CAM02-UCS")
+    start_color_lab = converter(start_color)
+    end_color_lab = converter(end_color)
+    
+    # Create a linear interpolation of colors in LAB color space
+    lab_colors = np.linspace(start_color_lab, end_color_lab, N)
+    
+    # Convert the interpolated colors back to RGB
+    converter = cspace_converter("CAM02-UCS", "sRGB1")
+    rgb_colors = converter(lab_colors)
+    
+    # Ensure all RGB values are within the valid range [0, 1]
+    rgb_colors = np.clip(rgb_colors, 0, 1)
+    if return_color:
+        return rgb_colors
+    
+    # Create and return the colormap
+    return LinearSegmentedColormap.from_list("custom_colormap", rgb_colors)
+
+def create_diverging_cmap(start_color: list, middle_color: list, end_color: list, N: int = 256):
+
+    first_map = create_perceptually_uniform_cmap(start_color, middle_color, N=N, return_color=True)
+    second_map = create_perceptually_uniform_cmap(middle_color, end_color, N=N, return_color=True)
+
+    # combine them and build a new colormap
+    combined = np.vstack((first_map, second_map))
+
+    return LinearSegmentedColormap.from_list("diverging_colormap", combined)
+    
+
+
+def get_color_list(color_list: list, i: int):
+
+    if i > len(color_list) - 1:
+        other_colors = mcolors.CSS4_COLORS
+        rand_color_index = np.random.randint(0, high=len(other_colors))
+        this_color = list(mcolors.CSS4_COLORS.values())[rand_color_index]
+        color_list.append(this_color)
+
+    return color_list
+
+c0 = [0.52156863, 0.58823529, 0.84313725]
+c1 = [0.96078431, 0.93333333, 0.37254902]
+c2 = [0.75686275, 0.21176471, 0.11372549]
+N_samples = 256
+temp_cmap = create_diverging_cmap(c0, c1, c2, N=N_samples)
+
+color_list = [[0.75686275, 0.21176471, 0.11372549],
+              [0.52156863, 0.58823529, 0.84313725],
+              [0.41568627, 0.24313725, 0.42352941],
+              [0.85882353, 0.58039216, 0.05098039],
+              [0.15294118, 0.19607843, 0.23529412],
+              [0.50196078, 0.52941176, 0.50196078],
+              [0.74509804, 0.52156863, 0.56862745],
+             ]
+
 
 
 # ---------------------------------------------------------------------
@@ -1060,9 +1143,9 @@ def plot_ice_release(df: pd.DataFrame, analysis_dir: Path) -> None:
     w = 0.25
 
     plt.figure(figsize=(10, 5))
-    plt.bar(x - w, sub["R50_CO_pure"], width=w, label="pure CO")
-    plt.bar(x, sub["R50_CO_at_CO2"], width=w, label="CO@CO2")
-    plt.bar(x + w, sub["R50_CO_at_H2O"], width=w, label="CO@H2O")
+    plt.bar(x - w, sub["R50_CO_pure"], width=w, label="pure CO", color=color_list[0])
+    plt.bar(x, sub["R50_CO_at_CO2"], width=w, label="CO@CO2", color=color_list[1])
+    plt.bar(x + w, sub["R50_CO_at_H2O"], width=w, label="CO@H2O", color=color_list[2])
     plt.yscale("log")
     plt.xticks(x, sub["run_name"], rotation=30, ha="right")
     plt.ylabel(r"Median release radius $R_{50}$ [au]")
@@ -1083,8 +1166,8 @@ def plot_ice_partitioning(df: pd.DataFrame, analysis_dir: Path) -> None:
     w = 0.35
 
     plt.figure(figsize=(10, 5))
-    plt.bar(x - w / 2, sub["final_hidden_CO_fraction"], width=w, label="hidden CO")
-    plt.bar(x + w / 2, sub["final_gas_CO_fraction"], width=w, label="gas CO")
+    plt.bar(x - w / 2, sub["final_hidden_CO_fraction"], width=w, label="hidden CO", color=color_list[0])
+    plt.bar(x + w / 2, sub["final_gas_CO_fraction"], width=w, label="gas CO", color=color_list[1])
     plt.xticks(x, sub["run_name"], rotation=30, ha="right")
     plt.ylabel("Fraction of total CO")
     plt.ylim(0, 1)
@@ -1110,13 +1193,15 @@ def plot_cumulative_release_profiles(df: pd.DataFrame, analysis_dir: Path) -> No
         r = rel["r_au"]
         dlnr = dlnr_from_centers(r)
         plt.figure(figsize=(9, 5))
+        i = 0
         for channel, label in [
             ("CO_pure", "pure CO"),
             ("CO_at_CO2", "CO@CO2"),
             ("CO_at_H2O", "CO@H2O"),
         ]:
             prof = rel[f"dM_{channel}"] / np.maximum(dlnr, EPS) / MEARTH
-            plt.semilogx(r, prof, label=label)
+            plt.semilogx(r, prof, label=label, color=color_list[i])
+            i += 1
         plt.xlabel("Radius [au]")
         plt.ylabel(r"$dM_{\rm CO,release}^{\rm cum}/d\ln r$ [M$_\oplus$]")
         plt.title(f"Cumulative CO release: {row['run_name']}")
@@ -1129,12 +1214,14 @@ def plot_transport(df: pd.DataFrame, analysis_dir: Path) -> None:
     sub = include_fiducial(df, "stokes").sort_values("St_pebble")
     if not sub.empty:
         plt.figure(figsize=(8, 5))
+        i = 0
         for colname, label in [
             ("R50_CO_pure", "pure CO"),
             ("R50_CO_at_CO2", "CO@CO2"),
             ("R50_CO_at_H2O", "CO@H2O"),
         ]:
-            plt.plot(sub["St_pebble"], sub[colname], marker="o", label=label)
+            plt.plot(sub["St_pebble"], sub[colname], marker="o", label=label, color=color_list[i])
+            i += 1
         plt.xscale("log")
         plt.yscale("log")
         plt.xlabel("Pebble Stokes number")
@@ -1147,9 +1234,12 @@ def plot_transport(df: pd.DataFrame, analysis_dir: Path) -> None:
     sub = include_fiducial(df, "alpha").sort_values("alpha")
     if not sub.empty:
         plt.figure(figsize=(8, 5))
-        plt.plot(sub["alpha"], sub["final_hidden_CO_fraction"], marker="o", label="hidden CO fraction")
-        plt.plot(sub["alpha"], sub["final_gas_CO_fraction"], marker="o", label="gas CO fraction")
-        plt.plot(sub["alpha"], sub["global_small_fraction_solid_volatile"], marker="o", label="small volatile fraction")
+        plt.plot(sub["alpha"], sub["final_hidden_CO_fraction"], marker="o", 
+                 label="hidden CO fraction", color=color_list[0])
+        plt.plot(sub["alpha"], sub["final_gas_CO_fraction"], marker="o", 
+                 label="gas CO fraction", color=color_list[1])
+        plt.plot(sub["alpha"], sub["global_small_fraction_solid_volatile"], marker="o", 
+                 label="small volatile fraction", color=color_list[2])
         plt.xscale("log")
         plt.xlabel(r"$\alpha$ and $\alpha_z$")
         plt.ylabel("Fraction")
@@ -1165,9 +1255,12 @@ def plot_condensation(df: pd.DataFrame, analysis_dir: Path) -> None:
         return
 
     plt.figure(figsize=(8, 5))
-    plt.plot(sub["cond_small"], sub["global_C_over_O_pebble"], marker="o", label="pebble C/O")
-    plt.plot(sub["cond_small"], sub["global_C_over_O_small"], marker="o", label="small-grain C/O")
-    plt.plot(sub["cond_small"], sub["global_small_fraction_solid_volatile"], marker="o", label="small volatile fraction")
+    plt.plot(sub["cond_small"], sub["global_C_over_O_pebble"], marker="o", 
+             label="pebble C/O", color=color_list[0])
+    plt.plot(sub["cond_small"], sub["global_C_over_O_small"], marker="o", 
+             label="small-grain C/O", color=color_list[1])
+    plt.plot(sub["cond_small"], sub["global_small_fraction_solid_volatile"], marker="o", 
+             label="small volatile fraction", color=color_list[2])
     plt.xlabel("Small-grain condensation weight")
     plt.ylabel("Ratio / fraction")
     plt.title("Carrier history and recondensation sensitivity")
@@ -1209,6 +1302,7 @@ def plot_freezeout(df: pd.DataFrame, analysis_dir: Path) -> None:
     plt.barh(
         sub["run_name"],
         sub["B_CO_global_vs_classical_freezeout"],
+        color=color_list[0],
     )
     plt.axvline(1.0, linewidth=1)
     plt.xscale("log")
@@ -1228,6 +1322,7 @@ def plot_freezeout(df: pd.DataFrame, analysis_dir: Path) -> None:
     plt.scatter(
         sub["classical_global_gas_CO_fraction"],
         sub["model_global_gas_CO_fraction"],
+        color=color_list[0],
     )
 
     lo = min(
@@ -1242,7 +1337,7 @@ def plot_freezeout(df: pd.DataFrame, analysis_dir: Path) -> None:
     lo = max(lo, 1e-6)
     hi = max(hi, lo * 10)
 
-    plt.plot([lo, hi], [lo, hi], linestyle="--", linewidth=1)
+    plt.plot([lo, hi], [lo, hi], linestyle="--", linewidth=1, color="gray")
 
     for _, row in sub.iterrows():
         plt.annotate(
@@ -1286,12 +1381,14 @@ def plot_freezeout(df: pd.DataFrame, analysis_dir: Path) -> None:
             ice["model_global_gas_CO_fraction"],
             width=w,
             label="model",
+            color=color_list[0],
         )
         plt.bar(
             x + w / 2,
             ice["classical_global_gas_CO_fraction"],
             width=w,
             label="classical freeze-out proxy",
+            color=color_list[1],
         )
         plt.xticks(x, ice["run_name"], rotation=30, ha="right")
         plt.ylabel("Global gas CO fraction")
@@ -1310,11 +1407,13 @@ def plot_freezeout(df: pd.DataFrame, analysis_dir: Path) -> None:
         plt.barh(
             sub2["run_name"],
             sub2["delta_CO_gas_vs_classical_global_Mearth"],
+            color=color_list[0],
         )
-        plt.axvline(0.0, linewidth=1)
+        plt.axvline(0.0, linewidth=1, color="gray")
         plt.xlabel(
             r"$M_{\rm CO,gas}^{\rm model} - "
-            r"M_{\rm CO,gas}^{\rm classical}$ [M$_\oplus$]"
+            r"M_{\rm CO,gas}^{\rm classical}$ [M$_\oplus$]",
+            color=color_list[1],
         )
         plt.ylabel("Run")
         plt.title("Global gas CO excess/depletion relative to classical freeze-out")
@@ -1327,9 +1426,9 @@ def plot_vertical(df: pd.DataFrame, analysis_dir: Path) -> None:
         return
 
     plt.figure(figsize=(8, 5))
-    plt.plot(sub["T_atm_factor"], sub["final_hidden_CO_fraction"], marker="o", label="hidden CO fraction")
-    plt.plot(sub["T_atm_factor"], sub["global_C_over_O_pebble"], marker="o", label="pebble C/O")
-    plt.plot(sub["T_atm_factor"], sub["global_C_over_O_small"], marker="o", label="small-grain C/O")
+    plt.plot(sub["T_atm_factor"], sub["final_hidden_CO_fraction"], marker="o", label="hidden CO fraction", color=color_list[0])
+    plt.plot(sub["T_atm_factor"], sub["global_C_over_O_pebble"], marker="o", label="pebble C/O", color=color_list[1])
+    plt.plot(sub["T_atm_factor"], sub["global_C_over_O_small"], marker="o", label="small-grain C/O", color=color_list[2])
     plt.xlabel(r"$T_{\rm atm}/T_{\rm mid}$")
     plt.ylabel("Ratio / fraction")
     plt.title("Vertical temperature sensitivity")
@@ -1347,8 +1446,8 @@ def plot_vdiff(df: pd.DataFrame, analysis_dir: Path) -> None:
     x = np.arange(len(sub))
     w = 0.35
     plt.figure(figsize=(10, 5))
-    plt.bar(x - w / 2, sub["final_hidden_CO_fraction"], width=w, label="hidden CO")
-    plt.bar(x + w / 2, sub["final_gas_CO_fraction"], width=w, label="gas CO")
+    plt.bar(x - w / 2, sub["final_hidden_CO_fraction"], width=w, label="hidden CO", color=color_list[0])
+    plt.bar(x + w / 2, sub["final_gas_CO_fraction"], width=w, label="gas CO", color=color_list[1])
     plt.xticks(x, sub["run_name"], rotation=30, ha="right")
     plt.ylabel("Fraction of total CO")
     plt.ylim(0, 1)
@@ -1367,9 +1466,9 @@ def plot_release_temperature(df: pd.DataFrame, analysis_dir: Path) -> None:
     x = np.arange(len(sub))
     w = 0.25
     plt.figure(figsize=(9, 5))
-    plt.bar(x - w, sub["R50_CO_pure"], width=w, label="pure CO")
-    plt.bar(x, sub["R50_CO_at_CO2"], width=w, label="CO@CO2")
-    plt.bar(x + w, sub["R50_CO_at_H2O"], width=w, label="CO@H2O")
+    plt.bar(x - w, sub["R50_CO_pure"], width=w, label="pure CO", color=color_list[0])
+    plt.bar(x, sub["R50_CO_at_CO2"], width=w, label="CO@CO2", color=color_list[1])
+    plt.bar(x + w, sub["R50_CO_at_H2O"], width=w, label="CO@H2O", color=color_list[2])
     plt.yscale("log")
     plt.xticks(x, sub["run_name"], rotation=30, ha="right")
     plt.ylabel(r"Median release radius $R_{50}$ [au]")
