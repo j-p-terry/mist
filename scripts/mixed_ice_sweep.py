@@ -1547,6 +1547,7 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
 
     fig.savefig(Path(analysis_dir) / "paper_sensitivity_summary.png", dpi=240)
     plt.close(fig)
+    
 def plot_ice_release(df: pd.DataFrame, analysis_dir: Path) -> None:
     """Standalone paper-ready R50 release-radius summary for the ice suite."""
     names = ICE_SUITE_NAMES
@@ -2087,6 +2088,496 @@ def plot_release_temperature(df: pd.DataFrame, analysis_dir: Path) -> None:
     plt.legend()
     plt.grid(True, which="both", axis="y", alpha=0.3)
     savefig(analysis_dir / "release_temperature_sensitivity.png")
+    
+# ---------------------------------------------------------------------
+# Paper / appendix tables
+# ---------------------------------------------------------------------
+def _nested_get(d: Dict[str, Any], path: Sequence[str], default: Any = np.nan) -> Any:
+    """Safely get a nested dictionary value."""
+    cur = d
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            return default
+        cur = cur[key]
+    return cur
+
+
+def _first_nested_get(
+    d: Dict[str, Any],
+    paths: Sequence[Sequence[str]],
+    default: Any = np.nan,
+) -> Any:
+    """Return the first available nested value from a list of possible paths."""
+    for path in paths:
+        value = _nested_get(d, path, default=np.nan)
+        if not _is_missing(value):
+            return value
+    return default
+
+
+def _is_missing(x: Any) -> bool:
+    if x is None:
+        return True
+    try:
+        return bool(pd.isna(x))
+    except Exception:
+        return False
+
+
+def _fmt_table_value(x: Any, sig: int = 3) -> str:
+    """Compact formatter for table values."""
+    if _is_missing(x):
+        return "--"
+
+    if isinstance(x, (bool, np.bool_)):
+        return "yes" if bool(x) else "no"
+
+    if isinstance(x, str):
+        return x
+
+    try:
+        xf = float(x)
+    except Exception:
+        return str(x)
+
+    if not np.isfinite(xf):
+        return "--"
+
+    if xf == 0.0:
+        return "0"
+
+    if 1.0e-3 <= abs(xf) < 1.0e4:
+        return f"{xf:.{sig}g}"
+
+    return f"{xf:.{sig}e}"
+
+
+def _latex_escape_text(s: Any) -> str:
+    """
+    Escape ordinary text for LaTeX tables. Do not use this on strings that
+    intentionally contain LaTeX math.
+    """
+    s = str(s)
+    repl = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+    for old, new in repl.items():
+        s = s.replace(old, new)
+    return s
+
+
+TABLE_RUN_LABELS = {
+    "ice_pure_snowline": "pure snow-surface",
+    "ice_low_trap": "low trapping",
+    "fiducial": "fiducial",
+    "ice_co2_trap": r"CO$_2$-rich trapping",
+    "ice_h2o_trap": r"H$_2$O-rich trapping",
+    "fiducial_w_backreact": "fiducial + backreaction",
+    "uncapped": "uncapped",
+    "st_pebble_0p003": r"$St_{\rm peb}=0.003$",
+    "st_pebble_0p1": r"$St_{\rm peb}=0.1$",
+    "alpha_1e_m4": r"$\alpha=\alpha_z=10^{-4}$",
+    "alpha_1e_m2": r"$\alpha=\alpha_z=10^{-2}$",
+    "cond_pebble_0p99": r"$w_{\rm small}^{\rm cond}=0.01$",
+    "cond_equal_0p50": r"$w_{\rm small}^{\rm cond}=0.50$",
+    "cond_small_0p90": r"$w_{\rm small}^{\rm cond}=0.90$",
+    "vertical_Tatm_1p2": r"$T_{\rm atm}/T_{\rm mid}=1.2$",
+    "vertical_Tatm_3p0": r"$T_{\rm atm}/T_{\rm mid}=3.0$",
+    "vdiff_fiducial_off": "fiducial, no vapor diffusion",
+    "vdiff_h2o_trap_off": r"H$_2$O-rich trapping, no vapor diffusion",
+    "release_cool": "cool release",
+    "release_warm": "warm release",
+}
+
+
+def _table_run_label(run_name: str) -> str:
+    return TABLE_RUN_LABELS.get(str(run_name), str(run_name).replace("_", " "))
+
+
+def _write_table_pair(
+    table: pd.DataFrame,
+    analysis_dir: Path,
+    basename: str,
+    latex_caption: Optional[str] = None,
+    latex_label: Optional[str] = None,
+) -> None:
+    """
+    Write a table as both CSV and LaTeX. Values are expected to already be
+    formatted as strings if column-specific formatting is desired.
+    """
+    analysis_dir = Path(analysis_dir)
+    table.to_csv(analysis_dir / f"{basename}.csv", index=False)
+
+    latex = table.to_latex(
+        index=False,
+        escape=False,
+        na_rep="--",
+        caption=latex_caption,
+        label=latex_label,
+    )
+
+    with open(analysis_dir / f"{basename}.tex", "w", encoding="utf-8") as f:
+        f.write(latex)
+
+
+def _fiducial_yaml_from_manifest(manifest: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """Load the fiducial YAML from the sweep manifest."""
+    if "run_name" not in manifest.columns or "yaml_path" not in manifest.columns:
+        return None
+
+    fid = manifest[manifest["run_name"] == "fiducial"]
+    if fid.empty:
+        return None
+
+    yaml_path = Path(str(fid.iloc[0]["yaml_path"]))
+    if not yaml_path.exists():
+        return None
+
+    return read_yaml(yaml_path)
+
+
+def write_fiducial_parameter_table(
+    manifest: pd.DataFrame,
+    analysis_dir: Path,
+) -> pd.DataFrame:
+    """
+    Write a compact fiducial-parameter table for the main text or methods appendix.
+
+    This reads the fiducial YAML listed in sweep_manifest.csv. Missing values are
+    written as '--', so the function is robust to minor YAML-schema differences.
+    """
+    params = _fiducial_yaml_from_manifest(manifest)
+    if params is None:
+        return pd.DataFrame()
+
+    rows = []
+
+    def add(category: str, parameter: str, value: Any, description: str) -> None:
+        rows.append(
+            {
+                "Category": category,
+                "Parameter": parameter,
+                "Fiducial value": _fmt_table_value(value),
+                "Description": description,
+            }
+        )
+
+    # Disk / grid.
+    add(
+        "Grid",
+        r"$r_{\min}$ [au]",
+        _first_nested_get(params, [["grid", "r_min_au"], ["disk", "r_min_au"], ["radial_grid", "r_min_au"]]),
+        "Inner radial boundary.",
+    )
+    add(
+        "Grid",
+        r"$r_{\max}$ [au]",
+        _first_nested_get(params, [["grid", "r_max_au"], ["disk", "r_max_au"], ["radial_grid", "r_max_au"]]),
+        "Outer radial boundary.",
+    )
+    add(
+        "Grid",
+        r"$N_r$",
+        _first_nested_get(params, [["grid", "n_r"], ["disk", "n_r"], ["radial_grid", "n_r"]]),
+        "Number of radial cells.",
+    )
+
+    # Gas and turbulence.
+    add("Gas", r"$\alpha$", _nested_get(params, ["gas", "alpha"]), "Radial turbulent transport parameter.")
+    add("Gas", r"gas evolution", _nested_get(params, ["gas", "update_gas"], default=np.nan), "Whether the gas surface density is evolved.")
+    add("Vertical", r"$\alpha_z$", _nested_get(params, ["vertical", "alpha_z"]), "Vertical stirring / settling parameter.")
+    add(
+        "Vertical",
+        r"$T_{\rm atm}/T_{\rm mid}$",
+        _nested_get(params, ["vertical", "temperature", "T_atm_factor"]),
+        "Atmospheric temperature factor.",
+    )
+    add(
+        "Vertical",
+        r"$z_q/H_g$",
+        _nested_get(params, ["vertical", "temperature", "zq_H"]),
+        "Vertical temperature transition height.",
+    )
+    add(
+        "Vertical",
+        r"$p_T$",
+        _nested_get(params, ["vertical", "temperature", "power"]),
+        "Vertical temperature transition sharpness.",
+    )
+    add(
+        "Shielding",
+        r"$A_{V,\rm crit}$",
+        _nested_get(params, ["vertical", "shielding", "Av_crit"]),
+        "Critical visual extinction for shielding.",
+    )
+
+    # Dust.
+    add("Dust", r"$St_{\rm peb}$", _nested_get(params, ["dust", "carriers", "pebble", "St"]), "Pebble Stokes number.")
+    add("Dust", r"$St_{\rm small}$", _nested_get(params, ["dust", "carriers", "small", "St"]), "Small-grain Stokes number.")
+    add(
+        "Dust",
+        r"$w_{\rm peb}^{\rm cond}$",
+        _nested_get(params, ["dust", "volatile_carrier_fractions", "pebble"]),
+        "Pebble share of newly condensed volatile ice.",
+    )
+    add(
+        "Dust",
+        r"$w_{\rm small}^{\rm cond}$",
+        _nested_get(params, ["dust", "volatile_carrier_fractions", "small"]),
+        "Small-grain share of newly condensed volatile ice.",
+    )
+    add(
+        "Dust",
+        "backreaction",
+        _first_nested_get(params, [["dust", "backreaction", "enabled"], ["dust", "backreaction"]]),
+        "Whether dust backreaction modifies carrier/gas velocities.",
+    )
+
+    # CO partition and release.
+    add("CO", r"$f_{\rm pure}$", _nested_get(params, ["volatiles", "CO", "solid_fractions", "pure"]), "Pure CO-ice fraction.")
+    add("CO", r"$f_{\rm CO@CO_2}$", _nested_get(params, ["volatiles", "CO", "solid_fractions", "at_CO2"]), r"CO fraction following CO$_2$-associated release.")
+    add("CO", r"$f_{\rm CO@H_2O}$", _nested_get(params, ["volatiles", "CO", "solid_fractions", "at_H2O"]), r"CO fraction following H$_2$O-associated release.")
+    add("CO", r"$T_{\rm rel,pure}$ [K]", _nested_get(params, ["volatiles", "CO", "release_temperatures_K", "pure"]), "Pure CO release temperature.")
+    add("CO", r"$T_{\rm rel,CO@CO_2}$ [K]", _nested_get(params, ["volatiles", "CO", "release_temperatures_K", "at_CO2"]), r"CO@CO$_2$ release temperature.")
+    add("CO", r"$T_{\rm rel,CO@H_2O}$ [K]", _nested_get(params, ["volatiles", "CO", "release_temperatures_K", "at_H2O"]), r"CO@H$_2$O release temperature.")
+
+    # CO2 and H2O.
+    add(r"CO$_2$", r"$f_{\rm pure}$", _nested_get(params, ["volatiles", "CO2", "solid_fractions", "pure"]), r"Pure CO$_2$-ice fraction.")
+    add(r"CO$_2$", r"$f_{\rm CO_2@H_2O}$", _nested_get(params, ["volatiles", "CO2", "solid_fractions", "at_H2O"]), r"CO$_2$ fraction following H$_2$O-associated release.")
+    add(r"H$_2$O", r"$T_{\rm rel,H_2O}$ [K]", _nested_get(params, ["volatiles", "H2O", "release_temperature_K"]), r"H$_2$O release temperature.")
+
+    # Capacity.
+    cap = _nested_get(params, ["volatiles", "trapping_capacity"], default={})
+    add("Capacity", "enabled", _nested_get(cap, ["enabled"]), "Whether host-capacity limits are applied.")
+    add("Capacity", "excess destination", _nested_get(cap, ["excess_destination"]), "Reservoir receiving over-capacity guest volatile.")
+    add("Capacity", r"$q_{\rm CO|CO_2}$", _nested_get(cap, ["CO_at_CO2", "max_guest_per_host_mol"]), r"Maximum CO/CO$_2$ guest-host molecular ratio.")
+    add("Capacity", r"$q_{\rm CO|H_2O}$", _nested_get(cap, ["CO_at_H2O", "max_guest_per_host_mol"]), r"Maximum CO/H$_2$O guest-host molecular ratio.")
+    add("Capacity", r"$q_{\rm CO_2|H_2O}$", _nested_get(cap, ["CO2_at_H2O", "max_guest_per_host_mol"]), r"Maximum CO$_2$/H$_2$O guest-host molecular ratio.")
+
+    table = pd.DataFrame(rows)
+    _write_table_pair(
+        table,
+        analysis_dir,
+        "table_fiducial_parameters",
+        latex_caption="Fiducial model parameters.",
+        latex_label="tab:fiducial_parameters",
+    )
+    return table
+
+
+def write_main_results_table(
+    metrics: pd.DataFrame,
+    analysis_dir: Path,
+    names: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    """
+    Write a compact main-text results table for the core ice suite.
+    """
+    if names is None:
+        names = [
+            "ice_pure_snowline",
+            "ice_low_trap",
+            "fiducial",
+            "ice_co2_trap",
+            "ice_h2o_trap",
+            "fiducial_w_backreact",
+            "uncapped",
+        ]
+
+    sub = ordered(metrics, names)
+    if sub.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, row in sub.iterrows():
+        rows.append(
+            {
+                "Run": _table_run_label(row["run_name"]),
+                r"$f_{\rm CO,hidden}$": _fmt_table_value(row.get("final_hidden_CO_fraction")),
+                r"$f_{\rm CO,gas}$": _fmt_table_value(row.get("final_gas_CO_fraction")),
+                r"$R_{50}^{\rm pure}$ [au]": _fmt_table_value(row.get("R50_CO_pure")),
+                r"$R_{50}^{\rm CO@CO_2}$ [au]": _fmt_table_value(row.get("R50_CO_at_CO2")),
+                r"$R_{50}^{\rm CO@H_2O}$ [au]": _fmt_table_value(row.get("R50_CO_at_H2O")),
+                "Pebble C/O": _fmt_table_value(row.get("global_C_over_O_pebble")),
+                "Small-grain C/O": _fmt_table_value(row.get("global_C_over_O_small")),
+            }
+        )
+
+    table = pd.DataFrame(rows)
+    _write_table_pair(
+        table,
+        analysis_dir,
+        "table_main_results",
+        latex_caption="Summary of final CO partitioning and median release radii for the main model suite.",
+        latex_label="tab:main_results",
+    )
+    return table
+
+
+def write_sweep_definition_table(
+    manifest: pd.DataFrame,
+    analysis_dir: Path,
+    fiducial_name: str = "fiducial",
+) -> pd.DataFrame:
+    """
+    Write a compact appendix table describing how each sweep run differs from
+    the fiducial model.
+
+    The function compares each manifest row against the fiducial row and writes
+    only the changed parameters.
+    """
+    if manifest.empty or "run_name" not in manifest.columns:
+        return pd.DataFrame()
+
+    fid = manifest[manifest["run_name"] == fiducial_name]
+    fid_row = fid.iloc[0] if not fid.empty else None
+
+    compare_cols = [
+        ("CO_pure", r"$f_{\rm CO,pure}$"),
+        ("CO_at_CO2", r"$f_{\rm CO@CO_2}$"),
+        ("CO_at_H2O", r"$f_{\rm CO@H_2O}$"),
+        ("CO2_pure", r"$f_{\rm CO_2,pure}$"),
+        ("CO2_at_H2O", r"$f_{\rm CO_2@H_2O}$"),
+        ("St_pebble", r"$St_{\rm peb}$"),
+        ("St_small", r"$St_{\rm small}$"),
+        ("alpha", r"$\alpha$"),
+        ("alpha_z", r"$\alpha_z$"),
+        ("cond_pebble", r"$w_{\rm peb}^{\rm cond}$"),
+        ("cond_small", r"$w_{\rm small}^{\rm cond}$"),
+        ("T_atm_factor", r"$T_{\rm atm}/T_{\rm mid}$"),
+        ("vapor_diffusion", "vapor diffusion"),
+        ("Trel_CO_pure", r"$T_{\rm rel,CO,pure}$"),
+        ("Trel_CO_at_CO2", r"$T_{\rm rel,CO@CO_2}$"),
+        ("Trel_CO_at_H2O", r"$T_{\rm rel,CO@H_2O}$"),
+    ]
+
+    rows = []
+    for _, row in manifest.iterrows():
+        run_name = row["run_name"]
+
+        changed = []
+        if fid_row is None or run_name == fiducial_name:
+            changed = ["fiducial values"]
+        else:
+            for colname, label in compare_cols:
+                if colname not in manifest.columns:
+                    continue
+
+                val = row.get(colname)
+                fid_val = fid_row.get(colname)
+
+                if _is_missing(val) and _is_missing(fid_val):
+                    continue
+
+                # Use allclose for numeric values and direct comparison otherwise.
+                differs = False
+                try:
+                    differs = not np.isclose(float(val), float(fid_val), rtol=1.0e-12, atol=1.0e-300)
+                except Exception:
+                    differs = str(val) != str(fid_val)
+
+                if differs:
+                    changed.append(f"{label} = {_fmt_table_value(val)}")
+
+        if not changed:
+            changed = ["metadata/control change"]
+
+        rows.append(
+            {
+                "Run": _table_run_label(run_name),
+                "Group": _latex_escape_text(row.get("group", "")),
+                "Changed parameters": "; ".join(changed),
+                "Purpose": _latex_escape_text(row.get("description", "")),
+            }
+        )
+
+    table = pd.DataFrame(rows)
+    _write_table_pair(
+        table,
+        analysis_dir,
+        "table_sweep_definitions",
+        latex_caption="Definition of the parameter-sweep models. Changed parameters are listed relative to the fiducial model.",
+        latex_label="tab:sweep_definitions",
+    )
+    return table
+
+
+def write_capacity_assumptions_table(
+    manifest: pd.DataFrame,
+    analysis_dir: Path,
+) -> pd.DataFrame:
+    """
+    Write a compact table describing the host-capacity assumptions in the
+    fiducial model.
+    """
+    params = _fiducial_yaml_from_manifest(manifest)
+    if params is None:
+        return pd.DataFrame()
+
+    cap = _nested_get(params, ["volatiles", "trapping_capacity"], default={})
+    if not isinstance(cap, dict):
+        return pd.DataFrame()
+
+    excess_destination = _nested_get(cap, ["excess_destination"], default="gas")
+
+    co_co2_host_mode = _nested_get(cap, ["CO_at_CO2", "host_mode"], default="pure_CO2_ice")
+    if co_co2_host_mode == "pure_CO2_ice":
+        co_co2_host = r"pure CO$_2$ ice"
+    elif co_co2_host_mode == "total_CO2_ice":
+        co_co2_host = r"all CO$_2$-bearing ice"
+    else:
+        co_co2_host = _latex_escape_text(co_co2_host_mode)
+
+    rows = [
+        {
+            "Guest reservoir": r"CO@CO$_2$",
+            "Host reservoir": co_co2_host,
+            "Molecular cap": _fmt_table_value(_nested_get(cap, ["CO_at_CO2", "max_guest_per_host_mol"])),
+            "Excess treatment": _latex_escape_text(excess_destination),
+        },
+        {
+            "Guest reservoir": r"CO@H$_2$O",
+            "Host reservoir": r"H$_2$O ice",
+            "Molecular cap": _fmt_table_value(_nested_get(cap, ["CO_at_H2O", "max_guest_per_host_mol"])),
+            "Excess treatment": _latex_escape_text(excess_destination),
+        },
+        {
+            "Guest reservoir": r"CO$_2$@H$_2$O",
+            "Host reservoir": r"H$_2$O ice",
+            "Molecular cap": _fmt_table_value(_nested_get(cap, ["CO2_at_H2O", "max_guest_per_host_mol"])),
+            "Excess treatment": _latex_escape_text(excess_destination),
+        },
+    ]
+
+    total_h2o_cap = _nested_get(cap, ["H2O_total_guest_capacity", "max_total_guest_per_host_mol"], default=np.nan)
+    if not _is_missing(total_h2o_cap):
+        rows.append(
+            {
+                "Guest reservoir": r"CO@H$_2$O + CO$_2$@H$_2$O",
+                "Host reservoir": r"H$_2$O ice",
+                "Molecular cap": _fmt_table_value(total_h2o_cap),
+                "Excess treatment": _latex_escape_text(excess_destination),
+            }
+        )
+
+    table = pd.DataFrame(rows)
+    _write_table_pair(
+        table,
+        analysis_dir,
+        "table_capacity_assumptions",
+        latex_caption="Host-capacity assumptions used in the fiducial capacity-limited model.",
+        latex_label="tab:capacity_assumptions",
+    )
+    return table
 
 
 def write_key_results(metrics: pd.DataFrame, analysis_dir: Path) -> None:
@@ -2195,7 +2686,17 @@ def analyze_sweep(sweep_dir: Path, analysis_dir: Path) -> None:
     ### exploratory / appendix only: bookkeeping-sensitive freeze-out proxy ####
     plot_freezeout(ok, analysis_dir)
 
+
+    #### tables ####
     write_key_results(ok, analysis_dir)
+    
+    ### for paper tables ####
+    write_fiducial_parameter_table(manifest, analysis_dir)
+    write_main_results_table(ok, analysis_dir)
+
+    ### appendix tables ####
+    write_sweep_definition_table(manifest, analysis_dir)
+    write_capacity_assumptions_table(manifest, analysis_dir)
 
     print(f"Analyzed {len(ok)} completed runs out of {len(metrics)} total.")
     print(f"Wrote metrics: {metrics_path}")
