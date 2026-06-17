@@ -66,6 +66,10 @@ Outputs from analyze
         vertical_temperature_sensitivity.png
         vapor_diffusion_summary.png
         release_temperature_sensitivity.png
+        paper_ice_suite_summary.png
+        paper_cumulative_release_fiducial.png
+        paper_sensitivity_summary.png
+        ice_suite_co_budget_stacked.png
         cumulative_release_profiles_ice_suite.png
 
 Assumptions
@@ -1133,8 +1137,419 @@ def include_fiducial(df: pd.DataFrame, group: str) -> pd.DataFrame:
     return df[(df["group"] == group) | (df["run_name"] == "fiducial")].copy()
 
 
+
+
+# ---------------------------------------------------------------------
+# Paper-ready plot helpers
+# ---------------------------------------------------------------------
+ICE_SUITE_NAMES = [
+    "ice_pure_snowline",
+    "ice_low_trap",
+    "fiducial",
+    "ice_co2_trap",
+    "ice_h2o_trap",
+    "fiducial_w_backreact",
+    "uncapped",
+]
+
+RUN_LABELS_SINGLE = {
+    "ice_pure_snowline": "pure snow-surface",
+    "ice_low_trap": "low trapping",
+    "fiducial": "fiducial",
+    "ice_co2_trap": r"CO$_2$-rich trapping",
+    "ice_h2o_trap": r"H$_2$O-rich trapping",
+    "fiducial_w_backreact": "fiducial + backreaction",
+    "uncapped": "uncapped",
+    "st_pebble_0p003": r"$St_{\rm peb}=0.003$",
+    "st_pebble_0p1": r"$St_{\rm peb}=0.1$",
+    "alpha_1e_m4": r"$\alpha=\alpha_z=10^{-4}$",
+    "alpha_1e_m2": r"$\alpha=\alpha_z=10^{-2}$",
+    "cond_pebble_0p99": r"$w_{\rm small}^{\rm cond}=0.01$",
+    "cond_equal_0p50": r"$w_{\rm small}^{\rm cond}=0.50$",
+    "cond_small_0p90": r"$w_{\rm small}^{\rm cond}=0.90$",
+    "vertical_Tatm_1p2": r"$T_{\rm atm}/T_{\rm mid}=1.2$",
+    "vertical_Tatm_3p0": r"$T_{\rm atm}/T_{\rm mid}=3.0$",
+    "vdiff_fiducial_off": "fiducial, no vapor diffusion",
+    "vdiff_h2o_trap_off": r"H$_2$O-rich trapping, no vapor diffusion",
+    "release_cool": "cool release",
+    "release_warm": "warm release",
+}
+
+RUN_LABELS_MULTILINE = {
+    "ice_pure_snowline": "pure\nsnow-surface",
+    "ice_low_trap": "low\ntrapping",
+    "fiducial": "fiducial",
+    "ice_co2_trap": "CO$_2$-rich\ntrapping",
+    "ice_h2o_trap": "H$_2$O-rich\ntrapping",
+    "fiducial_w_backreact": "fiducial\n+ backreaction",
+    "uncapped": "uncapped",
+    "vdiff_fiducial_off": "fiducial\nno vapor diffusion",
+    "vdiff_h2o_trap_off": "H$_2$O-rich\nno vapor diffusion",
+    "release_cool": "cool\nrelease",
+    "release_warm": "warm\nrelease",
+}
+
+CHANNEL_LABELS = {
+    "CO_pure": "pure CO",
+    "CO_at_CO2": r"CO@CO$_2$",
+    "CO_at_H2O": r"CO@H$_2$O",
+}
+
+CHANNEL_COLORS = {
+    "CO_pure": color_list[0],
+    "CO_at_CO2": color_list[1],
+    "CO_at_H2O": color_list[2],
+}
+
+
+def pretty_run_label(run_name: str, multiline: bool = False) -> str:
+    """Human-readable run labels for plot ticks and titles."""
+    labels = RUN_LABELS_MULTILINE if multiline else RUN_LABELS_SINGLE
+    return labels.get(run_name, str(run_name).replace("_", " "))
+
+
+def apply_paper_axis_style(ax: plt.Axes) -> None:
+    """Light, consistent styling for paper-facing summary plots."""
+    ax.grid(True, alpha=0.25)
+    ax.tick_params(direction="out")
+
+
+def final_co_budget_table(
+    df: pd.DataFrame,
+    names: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    """
+    Build an area-integrated final CO budget table for selected runs.
+
+    The returned fractions sum to unity:
+        gas CO + pure CO ice + CO@CO2 + CO@H2O = total CO.
+    """
+    if names is None:
+        names = ICE_SUITE_NAMES
+
+    sub = ordered(df, names)
+    rows: List[Dict[str, Any]] = []
+
+    for _, row in sub.iterrows():
+        run_name = row["run_name"]
+        snaps = snapshot_paths(Path(row["output_dir"]))
+        if not snaps:
+            continue
+
+        final_df = read_snapshot(snaps[-1])
+        area = annulus_area_cm2(final_df["r_au"].to_numpy(dtype=float))
+
+        co_gas = col(final_df, "CO_gas")
+        co_pure = col(final_df, "CO_pure_ice_pebble") + col(final_df, "CO_pure_ice_small")
+        co_at_co2 = col(final_df, "CO_at_CO2_ice_pebble") + col(final_df, "CO_at_CO2_ice_small")
+        co_at_h2o = col(final_df, "CO_at_H2O_ice_pebble") + col(final_df, "CO_at_H2O_ice_small")
+
+        m_gas = float(np.nansum(area * co_gas))
+        m_pure = float(np.nansum(area * co_pure))
+        m_at_co2 = float(np.nansum(area * co_at_co2))
+        m_at_h2o = float(np.nansum(area * co_at_h2o))
+        m_total = m_gas + m_pure + m_at_co2 + m_at_h2o
+        denom = max(m_total, EPS)
+
+        rows.append(
+            {
+                "run_name": run_name,
+                "group": row.get("group", ""),
+                "M_CO_gas": m_gas,
+                "M_CO_pure_ice": m_pure,
+                "M_CO_at_CO2": m_at_co2,
+                "M_CO_at_H2O": m_at_h2o,
+                "M_CO_total": m_total,
+                "frac_CO_gas": m_gas / denom,
+                "frac_CO_pure_ice": m_pure / denom,
+                "frac_CO_at_CO2": m_at_co2 / denom,
+                "frac_CO_at_H2O": m_at_h2o / denom,
+                "frac_CO_hidden": (m_at_co2 + m_at_h2o) / denom,
+                "frac_CO_solid_total": (m_pure + m_at_co2 + m_at_h2o) / denom,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def plot_paper_ice_suite_summary(
+    df: pd.DataFrame,
+    analysis_dir: Path,
+    names: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    """
+    Paper-facing two-panel summary:
+      (a) final global CO budget,
+      (b) matrix-dependent median CO release radii.
+    """
+    if names is None:
+        names = ICE_SUITE_NAMES
+
+    budget_df = final_co_budget_table(df, names=names)
+    release_df = ordered(df, names)
+
+    if budget_df.empty or release_df.empty:
+        return budget_df
+
+    analysis_dir = Path(analysis_dir)
+    budget_df.to_csv(analysis_dir / "paper_final_co_budget.csv", index=False)
+
+    # fig, axes = plt.subplots(
+    #     1,
+    #     2,
+    #     figsize=(13.2, 5.0),
+    #     gridspec_kw={"width_ratios": [1.25, 1.0]},
+    #     constrained_layout=True,
+    # )
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Plot A: stacked final CO budget.
+    x = np.arange(len(budget_df))
+    bottom = np.zeros(len(budget_df), dtype=float)
+    budget_components = [
+        ("frac_CO_gas", "gas CO", color_list[5]),
+        ("frac_CO_pure_ice", "pure CO ice", CHANNEL_COLORS["CO_pure"]),
+        ("frac_CO_at_CO2", r"CO@CO$_2$", CHANNEL_COLORS["CO_at_CO2"]),
+        ("frac_CO_at_H2O", r"CO@H$_2$O", CHANNEL_COLORS["CO_at_H2O"]),
+    ]
+    for colname, label, color in budget_components:
+        vals = budget_df[colname].to_numpy(dtype=float)
+        ax.bar(x, vals, bottom=bottom, label=label, color=color, edgecolor="black", linewidth=0.35)
+        bottom += vals
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([pretty_run_label(n, multiline=True) for n in budget_df["run_name"]], rotation=0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("Fraction of total CO")
+    ax.set_title("Final global CO budget")
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.14),
+        ncol=4,
+        frameon=True,
+    )
+    apply_paper_axis_style(ax)
+    fig.savefig(analysis_dir / "paper_ice_co_budget.png", dpi=240)
+    plt.close(fig)
+
+    # Plot B: median release radii.
+    fig, ax = plt.subplots(figsize=(10, 6))
+    release_df = ordered(release_df, budget_df["run_name"].tolist())
+    x = np.arange(len(release_df))
+    w = 0.25
+    series = [
+        ("R50_CO_pure", "CO_pure", -w),
+        ("R50_CO_at_CO2", "CO_at_CO2", 0.0),
+        ("R50_CO_at_H2O", "CO_at_H2O", w),
+    ]
+    for colname, channel, dx in series:
+        ax.bar(
+            x + dx,
+            release_df[colname],
+            width=w,
+            label=CHANNEL_LABELS[channel],
+            color=CHANNEL_COLORS[channel],
+            edgecolor="black",
+            linewidth=0.35,
+        )
+
+    ax.set_yscale("log")
+    ax.set_xticks(x)
+    ax.set_xticklabels([pretty_run_label(n, multiline=True) for n in release_df["run_name"]], rotation=0)
+    ax.set_ylabel(r"Median release radius, $R_{50}$ [au]")
+    ax.set_title("Matrix-dependent CO release")
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.14),
+        ncol=4,
+        frameon=True,
+    )
+    ax.grid(True, which="both", axis="y", alpha=0.25)
+
+    fig.savefig(analysis_dir / "paper_ice_release_radius.png", dpi=240)
+    plt.close(fig)
+
+    return budget_df
+
+
+def plot_paper_fiducial_release_profile(
+    df: pd.DataFrame,
+    analysis_dir: Path,
+    run_name: str = "fiducial",
+) -> None:
+    """Paper-facing cumulative release profile for one representative run."""
+    sub = df[df["run_name"] == run_name]
+    if sub.empty:
+        return
+
+    row = sub.iloc[0]
+    snaps = snapshot_paths(Path(row["output_dir"]))
+    rel = cumulative_release(snaps)
+    if not rel.get("have_release", False):
+        return
+
+    r = rel["r_au"]
+    dlnr = dlnr_from_centers(r)
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.8))
+    for channel in RELEASE_CHANNELS:
+        prof = rel[f"dM_{channel}"] / np.maximum(dlnr, EPS) / MEARTH
+        ax.semilogx(
+            r,
+            prof,
+            label=CHANNEL_LABELS[channel],
+            color=CHANNEL_COLORS[channel],
+            linewidth=2.0,
+        )
+
+    ax.set_xlabel("Radius [au]")
+    ax.set_ylabel(r"$dM_{\rm CO,rel}^{\rm cum}/d\ln r$ [$M_\oplus$]")
+    ax.set_title(f"Cumulative CO release in the {pretty_run_label(run_name)} run")
+    ax.legend(frameon=True)
+    ax.grid(True, which="both", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(Path(analysis_dir) / f"paper_cumulative_release_{run_name}.png", dpi=240)
+    plt.close(fig)
+
+
+def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None:
+    """
+    Paper-facing 2x2 sensitivity figure. The top row emphasizes dominant controls,
+    while the bottom row shows robustness to secondary disk-structure choices.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(11.8, 8.2), constrained_layout=True)
+    ax_st, ax_cond = axes[0]
+    ax_vert, ax_alpha = axes[1]
+
+    # Pebble drift / Stokes number sensitivity.
+    sub = include_fiducial(df, "stokes").sort_values("St_pebble")
+    if not sub.empty:
+        for colname, channel in [
+            ("R50_CO_pure", "CO_pure"),
+            ("R50_CO_at_CO2", "CO_at_CO2"),
+            ("R50_CO_at_H2O", "CO_at_H2O"),
+        ]:
+            ax_st.plot(
+                sub["St_pebble"],
+                sub[colname],
+                marker="o",
+                linewidth=2.0,
+                label=CHANNEL_LABELS[channel],
+                color=CHANNEL_COLORS[channel],
+            )
+        ax_st.set_xscale("log")
+        ax_st.set_yscale("log")
+        ax_st.set_xlabel(r"Pebble Stokes number, $St_{\rm peb}$")
+        ax_st.set_ylabel(r"$R_{50}$ [au]")
+        ax_st.set_title("(a) Pebble drift")
+        ax_st.legend(frameon=True)
+        ax_st.grid(True, which="both", alpha=0.25)
+
+    # Carrier history / recondensation sensitivity.
+    sub = include_fiducial(df, "condensation").sort_values("cond_small")
+    if not sub.empty:
+        ax_cond.plot(
+            sub["cond_small"],
+            sub["global_C_over_O_pebble"],
+            marker="o",
+            linewidth=2.0,
+            label="pebble C/O",
+            color=color_list[0],
+        )
+        ax_cond.plot(
+            sub["cond_small"],
+            sub["global_C_over_O_small"],
+            marker="o",
+            linewidth=2.0,
+            label="small-grain C/O",
+            color=color_list[1],
+        )
+        ax_cond.plot(
+            sub["cond_small"],
+            sub["global_small_fraction_solid_volatile"],
+            marker="o",
+            linewidth=2.0,
+            label="small-grain volatile fraction",
+            color=color_list[2],
+        )
+        ax_cond.set_xlabel(r"Small-grain condensation weight, $w_{\rm small}^{\rm cond}$")
+        ax_cond.set_ylabel("Global ratio / fraction")
+        ax_cond.set_title("(b) Carrier assignment")
+        ax_cond.legend(frameon=True)
+        apply_paper_axis_style(ax_cond)
+
+    # Vertical temperature sensitivity.
+    sub = include_fiducial(df, "vertical").sort_values("T_atm_factor")
+    if not sub.empty:
+        ax_vert.plot(
+            sub["T_atm_factor"],
+            sub["final_hidden_CO_fraction"],
+            marker="o",
+            linewidth=2.0,
+            label="hidden CO fraction",
+            color=color_list[0],
+        )
+        ax_vert.plot(
+            sub["T_atm_factor"],
+            sub["global_C_over_O_pebble"],
+            marker="o",
+            linewidth=2.0,
+            label="pebble C/O",
+            color=color_list[1],
+        )
+        ax_vert.plot(
+            sub["T_atm_factor"],
+            sub["global_C_over_O_small"],
+            marker="o",
+            linewidth=2.0,
+            label="small-grain C/O",
+            color=color_list[2],
+        )
+        ax_vert.set_xlabel(r"$T_{\rm atm}/T_{\rm mid}$")
+        ax_vert.set_ylabel("Global ratio / fraction")
+        ax_vert.set_title("(c) Vertical temperature")
+        ax_vert.legend(frameon=True)
+        apply_paper_axis_style(ax_vert)
+
+    # Turbulence / vertical mixing sensitivity.
+    sub = include_fiducial(df, "alpha").sort_values("alpha")
+    if not sub.empty:
+        ax_alpha.plot(
+            sub["alpha"],
+            sub["final_hidden_CO_fraction"],
+            marker="o",
+            linewidth=2.0,
+            label="hidden CO fraction",
+            color=color_list[0],
+        )
+        ax_alpha.plot(
+            sub["alpha"],
+            sub["final_gas_CO_fraction"],
+            marker="o",
+            linewidth=2.0,
+            label="gas CO fraction",
+            color=color_list[1],
+        )
+        ax_alpha.plot(
+            sub["alpha"],
+            sub["global_small_fraction_solid_volatile"],
+            marker="o",
+            linewidth=2.0,
+            label="small-grain volatile fraction",
+            color=color_list[2],
+        )
+        ax_alpha.set_xscale("log")
+        ax_alpha.set_xlabel(r"Turbulent parameter, $\alpha=\alpha_z$")
+        ax_alpha.set_ylabel("Global fraction")
+        ax_alpha.set_title("(d) Turbulent transport/mixing")
+        ax_alpha.legend(frameon=True)
+        ax_alpha.grid(True, which="both", alpha=0.25)
+
+    fig.savefig(Path(analysis_dir) / "paper_sensitivity_summary.png", dpi=240)
+    plt.close(fig)
 def plot_ice_release(df: pd.DataFrame, analysis_dir: Path) -> None:
-    names = ["ice_pure_snowline", "ice_low_trap", "fiducial", "ice_co2_trap", "ice_h2o_trap", "fiducial_w_backreact", "uncapped"]
+    """Standalone paper-ready R50 release-radius summary for the ice suite."""
+    names = ICE_SUITE_NAMES
     sub = ordered(df, names)
     if sub.empty:
         return
@@ -1142,17 +1557,23 @@ def plot_ice_release(df: pd.DataFrame, analysis_dir: Path) -> None:
     x = np.arange(len(sub))
     w = 0.25
 
-    plt.figure(figsize=(10, 5))
-    plt.bar(x - w, sub["R50_CO_pure"], width=w, label="pure CO", color=color_list[0])
-    plt.bar(x, sub["R50_CO_at_CO2"], width=w, label="CO@CO2", color=color_list[1])
-    plt.bar(x + w, sub["R50_CO_at_H2O"], width=w, label="CO@H2O", color=color_list[2])
-    plt.yscale("log")
-    plt.xticks(x, sub["run_name"], rotation=30, ha="right")
-    plt.ylabel(r"Median release radius $R_{50}$ [au]")
-    plt.title("Ice matrix controls where CO enters the gas")
-    plt.legend()
-    plt.grid(True, which="both", axis="y", alpha=0.3)
-    savefig(analysis_dir / "ice_suite_release_r50.png")
+    fig, ax = plt.subplots(figsize=(10.5, 5.0))
+    ax.bar(x - w, sub["R50_CO_pure"], width=w, label=CHANNEL_LABELS["CO_pure"],
+           color=CHANNEL_COLORS["CO_pure"], edgecolor="black", linewidth=0.35)
+    ax.bar(x, sub["R50_CO_at_CO2"], width=w, label=CHANNEL_LABELS["CO_at_CO2"],
+           color=CHANNEL_COLORS["CO_at_CO2"], edgecolor="black", linewidth=0.35)
+    ax.bar(x + w, sub["R50_CO_at_H2O"], width=w, label=CHANNEL_LABELS["CO_at_H2O"],
+           color=CHANNEL_COLORS["CO_at_H2O"], edgecolor="black", linewidth=0.35)
+    ax.set_yscale("log")
+    ax.set_xticks(x)
+    ax.set_xticklabels([pretty_run_label(n, multiline=True) for n in sub["run_name"]])
+    ax.set_ylabel(r"Median release radius, $R_{50}$ [au]")
+    ax.set_title("Ice matrix controls where CO enters the gas")
+    ax.legend(frameon=True, ncol=3)
+    ax.grid(True, which="both", axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(Path(analysis_dir) / "ice_suite_release_r50.png", dpi=240)
+    plt.close(fig)
 
 
 def plot_ice_partitioning(df: pd.DataFrame, analysis_dir: Path) -> None:
@@ -1178,7 +1599,8 @@ def plot_ice_partitioning(df: pd.DataFrame, analysis_dir: Path) -> None:
 
 
 def plot_cumulative_release_profiles(df: pd.DataFrame, analysis_dir: Path) -> None:
-    names = ["ice_pure_snowline", "ice_low_trap", "fiducial", "ice_co2_trap", "ice_h2o_trap", "fiducial_w_backreact", "uncapped"]
+    """Write one cumulative-release profile per selected run for appendix diagnostics."""
+    names = ICE_SUITE_NAMES
     sub = ordered(df, names)
     if sub.empty:
         return
@@ -1192,61 +1614,73 @@ def plot_cumulative_release_profiles(df: pd.DataFrame, analysis_dir: Path) -> No
 
         r = rel["r_au"]
         dlnr = dlnr_from_centers(r)
-        plt.figure(figsize=(9, 5))
-        i = 0
-        for channel, label in [
-            ("CO_pure", "pure CO"),
-            ("CO_at_CO2", "CO@CO2"),
-            ("CO_at_H2O", "CO@H2O"),
-        ]:
+        fig, ax = plt.subplots(figsize=(9, 5))
+        for channel in RELEASE_CHANNELS:
             prof = rel[f"dM_{channel}"] / np.maximum(dlnr, EPS) / MEARTH
-            plt.semilogx(r, prof, label=label, color=color_list[i])
-            i += 1
-        plt.xlabel("Radius [au]")
-        plt.ylabel(r"$dM_{\rm CO,release}^{\rm cum}/d\ln r$ [M$_\oplus$]")
-        plt.title(f"Cumulative CO release: {row['run_name']}")
-        plt.legend()
-        plt.grid(True, which="both", alpha=0.3)
-        savefig(analysis_dir / f"cumulative_release_{row['run_name']}.png")
+            ax.semilogx(
+                r,
+                prof,
+                label=CHANNEL_LABELS[channel],
+                color=CHANNEL_COLORS[channel],
+                linewidth=1.8,
+            )
+        ax.set_xlabel("Radius [au]")
+        ax.set_ylabel(r"$dM_{\rm CO,rel}^{\rm cum}/d\ln r$ [$M_\oplus$]")
+        ax.set_title(f"Cumulative CO release: {pretty_run_label(row['run_name'])}")
+        ax.legend(frameon=True)
+        ax.grid(True, which="both", alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(Path(analysis_dir) / f"cumulative_release_{row['run_name']}.png", dpi=220)
+        plt.close(fig)
 
 
 def plot_transport(df: pd.DataFrame, analysis_dir: Path) -> None:
+    """Appendix-style individual sensitivity plots for transport/turbulence."""
     sub = include_fiducial(df, "stokes").sort_values("St_pebble")
     if not sub.empty:
-        plt.figure(figsize=(8, 5))
-        i = 0
-        for colname, label in [
-            ("R50_CO_pure", "pure CO"),
-            ("R50_CO_at_CO2", "CO@CO2"),
-            ("R50_CO_at_H2O", "CO@H2O"),
+        fig, ax = plt.subplots(figsize=(8, 5))
+        for colname, channel in [
+            ("R50_CO_pure", "CO_pure"),
+            ("R50_CO_at_CO2", "CO_at_CO2"),
+            ("R50_CO_at_H2O", "CO_at_H2O"),
         ]:
-            plt.plot(sub["St_pebble"], sub[colname], marker="o", label=label, color=color_list[i])
-            i += 1
-        plt.xscale("log")
-        plt.yscale("log")
-        plt.xlabel("Pebble Stokes number")
-        plt.ylabel(r"Median release radius $R_{50}$ [au]")
-        plt.title("Sensitivity to pebble drift")
-        plt.legend()
-        plt.grid(True, which="both", alpha=0.3)
-        savefig(analysis_dir / "stokes_sensitivity.png")
+            ax.plot(
+                sub["St_pebble"],
+                sub[colname],
+                marker="o",
+                linewidth=2.0,
+                label=CHANNEL_LABELS[channel],
+                color=CHANNEL_COLORS[channel],
+            )
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel(r"Pebble Stokes number, $St_{\rm peb}$")
+        ax.set_ylabel(r"Median release radius, $R_{50}$ [au]")
+        ax.set_title("Sensitivity to pebble drift")
+        ax.legend(frameon=True)
+        ax.grid(True, which="both", alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(Path(analysis_dir) / "stokes_sensitivity.png", dpi=220)
+        plt.close(fig)
 
     sub = include_fiducial(df, "alpha").sort_values("alpha")
     if not sub.empty:
-        plt.figure(figsize=(8, 5))
-        plt.plot(sub["alpha"], sub["final_hidden_CO_fraction"], marker="o", 
-                 label="hidden CO fraction", color=color_list[0])
-        plt.plot(sub["alpha"], sub["final_gas_CO_fraction"], marker="o", 
-                 label="gas CO fraction", color=color_list[1])
-        plt.plot(sub["alpha"], sub["global_small_fraction_solid_volatile"], marker="o", 
-                 label="small volatile fraction", color=color_list[2])
-        plt.xscale("log")
-        plt.xlabel(r"$\alpha$ and $\alpha_z$")
-        plt.ylabel("Fraction")
-        plt.title("Sensitivity to turbulence")
-        plt.legend()
-        plt.grid(True, which="both", alpha=0.3)
-        savefig(analysis_dir / "alpha_sensitivity.png")
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(sub["alpha"], sub["final_hidden_CO_fraction"], marker="o",
+                linewidth=2.0, label="hidden CO fraction", color=color_list[0])
+        ax.plot(sub["alpha"], sub["final_gas_CO_fraction"], marker="o",
+                linewidth=2.0, label="gas CO fraction", color=color_list[1])
+        ax.plot(sub["alpha"], sub["global_small_fraction_solid_volatile"], marker="o",
+                linewidth=2.0, label="small-grain volatile fraction", color=color_list[2])
+        ax.set_xscale("log")
+        ax.set_xlabel(r"Turbulent parameter, $\alpha=\alpha_z$")
+        ax.set_ylabel("Global fraction")
+        ax.set_title("Sensitivity to turbulent transport and vertical mixing")
+        ax.legend(frameon=True)
+        ax.grid(True, which="both", alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(Path(analysis_dir) / "alpha_sensitivity.png", dpi=220)
+        plt.close(fig)
 
 
 def plot_condensation(df: pd.DataFrame, analysis_dir: Path) -> None:
@@ -1742,7 +2176,14 @@ def analyze_sweep(sweep_dir: Path, analysis_dir: Path) -> None:
         print(f"No completed runs found. Wrote metrics table to {metrics_path}")
         return
 
+    ### for paper ####
+    plot_paper_ice_suite_summary(ok, analysis_dir)
+    plot_paper_fiducial_release_profile(ok, analysis_dir)
+    plot_paper_sensitivity_summary(ok, analysis_dir)
+    plot_final_co_budget_stacked(ok, analysis_dir)
     plot_ice_release(ok, analysis_dir)
+
+    ### additional diagnostics / appendix ####
     plot_ice_partitioning(ok, analysis_dir)
     plot_cumulative_release_profiles(ok, analysis_dir)
     plot_transport(ok, analysis_dir)
@@ -1750,8 +2191,10 @@ def analyze_sweep(sweep_dir: Path, analysis_dir: Path) -> None:
     plot_vertical(ok, analysis_dir)
     plot_vdiff(ok, analysis_dir)
     plot_release_temperature(ok, analysis_dir)
+
+    ### exploratory / appendix only: bookkeeping-sensitive freeze-out proxy ####
     plot_freezeout(ok, analysis_dir)
-    plot_final_co_budget_stacked(ok, analysis_dir)
+
     write_key_results(ok, analysis_dir)
 
     print(f"Analyzed {len(ok)} completed runs out of {len(metrics)} total.")

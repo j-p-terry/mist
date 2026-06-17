@@ -25,6 +25,9 @@ It makes:
     final_snow_surfaces.png
     time_radius_*.png
     selected_2d_*.png
+    paper_radial_co_and_carrier_composition.png
+    paper_cumulative_release_profile.png
+    paper_fiducial_morphology.png
     summary_metrics.csv
 """
 
@@ -242,7 +245,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
     plt.figure(figsize=(9, 5))
     this_color_list = color_list[:]
     for i, (col, label) in enumerate(zip(mass_cols, mass_labels)):
-        if col in enumerate(diag.columns):
+        if col in diag.columns:
             this_color_list = get_color_list(this_color_list, i)
             plt.plot(diag["time_yr"], np.maximum(diag[col], EPS), label=label, color=this_color_list[i])
     plt.yscale("log")
@@ -1183,6 +1186,147 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
 # -----------------------------
 # 2D snapshot plots
 # -----------------------------
+def _edges_from_centers_1d(x: np.ndarray, log: bool = False) -> np.ndarray:
+    """Return cell edges from monotonically increasing cell centers."""
+    x = np.asarray(x, dtype=float)
+    if x.ndim != 1 or x.size < 2:
+        raise ValueError("Need at least two 1D centers to infer cell edges.")
+
+    work = np.log(x) if log else x
+    edges = np.empty(work.size + 1, dtype=float)
+    edges[1:-1] = 0.5 * (work[:-1] + work[1:])
+    edges[0] = work[0] - 0.5 * (work[1] - work[0])
+    edges[-1] = work[-1] + 0.5 * (work[-1] - work[-2])
+    return np.exp(edges) if log else edges
+
+
+def _rz_cell_edges(r: np.ndarray, z_over_r: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Construct explicit curvilinear cell-edge coordinates for r--z/r plots.
+
+    The old plotting routine passed cell-centered 2D z/r coordinates directly
+    to pcolormesh. Because z/r varies with radius, those coordinates need not be
+    monotonic in both directions, and Matplotlib can infer incorrect cell edges.
+    This function builds the edges explicitly, which removes the common
+    pcolormesh warning and avoids small spurious rectangular chunks.
+    """
+    r = np.asarray(r, dtype=float)
+    zc = np.asarray(z_over_r, dtype=float)
+
+    if zc.ndim != 2:
+        raise ValueError("z_over_r must be a 2D array with shape (n_r, n_z).")
+    if zc.shape[0] != r.size:
+        raise ValueError(
+            f"Expected z_over_r.shape[0] == len(r), got {zc.shape[0]} and {r.size}."
+        )
+    if zc.shape[1] < 2:
+        raise ValueError("Need at least two vertical centers to infer z/r edges.")
+
+    # Radial edges are log-spaced because the radial grid is log-spaced.
+    r_edges = _edges_from_centers_1d(r, log=True)
+
+    # First infer vertical edges at each radial cell center.
+    z_vert_edges = np.empty((zc.shape[0], zc.shape[1] + 1), dtype=float)
+    z_vert_edges[:, 1:-1] = 0.5 * (zc[:, :-1] + zc[:, 1:])
+    z_vert_edges[:, 0] = zc[:, 0] - 0.5 * (zc[:, 1] - zc[:, 0])
+    z_vert_edges[:, -1] = zc[:, -1] + 0.5 * (zc[:, -1] - zc[:, -2])
+
+    # Then infer those vertical-edge coordinates at radial cell edges.
+    z_edges = np.empty((zc.shape[0] + 1, zc.shape[1] + 1), dtype=float)
+    z_edges[1:-1, :] = 0.5 * (z_vert_edges[:-1, :] + z_vert_edges[1:, :])
+    z_edges[0, :] = z_vert_edges[0, :] - 0.5 * (z_vert_edges[1, :] - z_vert_edges[0, :])
+    z_edges[-1, :] = z_vert_edges[-1, :] + 0.5 * (z_vert_edges[-1, :] - z_vert_edges[-2, :])
+
+    # The plots show the upper half column, so the lower edge should not dip below zero.
+    z_edges = np.maximum(z_edges, 0.0)
+    z_edges[:, 0] = 0.0
+
+    R_edges = np.broadcast_to(r_edges[:, None], z_edges.shape)
+    return R_edges, z_edges
+
+
+def _prepare_pcolor_values(
+    values: np.ndarray,
+    log_value: bool,
+    vmin: Optional[float] = None,
+) -> Tuple[np.ma.MaskedArray, str]:
+    """
+    Prepare values for pcolormesh. For log plots, non-positive finite values are
+    put at the plotting floor instead of becoming NaN. This prevents zero-valued
+    reservoirs from appearing as distracting black/blank chunks.
+    """
+    values = np.asarray(values, dtype=float)
+
+    if not log_value:
+        return np.ma.masked_invalid(values), ""
+
+    positive = values[np.isfinite(values) & (values > 0.0)]
+    if vmin is not None:
+        floor = 10.0 ** float(vmin)
+    elif positive.size:
+        floor = max(float(np.nanmin(positive)) * 1.0e-3, 1.0e-300)
+    else:
+        floor = 1.0e-300
+
+    plot_values = np.full_like(values, np.nan, dtype=float)
+    finite = np.isfinite(values)
+    plot_values[finite] = np.log10(np.maximum(values[finite], floor))
+    return np.ma.masked_invalid(plot_values), r"$\log_{10}$"
+
+
+def _copy_cmap_with_bad(cmap):
+    cmap_obj = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
+    try:
+        cmap_obj = cmap_obj.copy()
+    except AttributeError:
+        pass
+    try:
+        cmap_obj.set_bad("white")
+    except AttributeError:
+        pass
+    return cmap_obj
+
+
+def pcolor_r_z_on_axis(
+    ax: plt.Axes,
+    r: np.ndarray,
+    z_over_r: np.ndarray,
+    values: np.ndarray,
+    cb_label: str,
+    log_value: bool = False,
+    overlay: Optional[Dict[str, np.ndarray]] = None,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    cmap: str = "magma",
+):
+    """Plot a 2D r--z/r field on an existing axis using explicit cell edges."""
+    R_edges, Z_edges = _rz_cell_edges(r, z_over_r)
+    plot_values, log_prefix = _prepare_pcolor_values(values, log_value=log_value, vmin=vmin)
+    cmap_obj = _copy_cmap_with_bad(cmap)
+
+    mesh = ax.pcolormesh(
+        R_edges,
+        Z_edges,
+        plot_values,
+        shading="flat",
+        vmin=vmin,
+        vmax=vmax,
+        cmap=cmap_obj,
+        rasterized=True,
+    )
+    ax.set_xscale("log")
+    ax.set_xlabel("Radius [au]")
+    ax.set_ylabel(r"$z/r$")
+
+    if overlay:
+        for i, (name, surf) in enumerate(overlay.items()):
+            ax.plot(r, surf, label=name, color=color_list[i], linewidth=1.4)
+        ax.legend(fontsize=8, ncols=2, frameon=True)
+
+    label = rf"{log_prefix}({cb_label})" if log_prefix else cb_label
+    return mesh, label
+
+
 def pcolor_r_z(
     r: np.ndarray,
     z_over_r: np.ndarray,
@@ -1196,52 +1340,27 @@ def pcolor_r_z(
     vmax: Optional[float] = None,
     cmap: str = "magma",
 ) -> None:
-    R = np.broadcast_to(r[:, None], z_over_r.shape)
+    outpath = Path(outpath)
 
-    values = np.asarray(values, dtype=float)
-
-    if log_value:
-        plot_values = np.full_like(values, np.nan, dtype=float)
-        good = np.isfinite(values) & (values > 0.0)
-        plot_values[good] = np.log10(values[good])
-        label = rf"$\log_{{10}}({cb_label})$"
-    else:
-        plot_values = values
-        label = cb_label
-
-    if z_over_r.ndim == 2:
-        d0 = np.diff(z_over_r, axis=0)
-        d1 = np.diff(z_over_r, axis=1)
-        mono0 = np.all(d0 >= 0) or np.all(d0 <= 0)
-        mono1 = np.all(d1 >= 0) or np.all(d1 <= 0)
-        if not (mono0 and mono1):
-            print(f"[pcolor_r_z] non-monotonic z_over_r for: {outpath}")
-
-    plt.figure(figsize=(9, 5))
-    mesh = plt.pcolormesh(
-        R,
+    fig, ax = plt.subplots(figsize=(9, 5))
+    mesh, label = pcolor_r_z_on_axis(
+        ax,
+        r,
         z_over_r,
-        plot_values,
-        shading="auto",
+        values,
+        cb_label=cb_label,
+        log_value=log_value,
+        overlay=overlay,
         vmin=vmin,
         vmax=vmax,
         cmap=cmap,
-        rasterized=True,
     )
-    plt.xscale("log")
-    plt.xlabel("Radius [au]")
-    plt.ylabel("z/r")
-    plt.title(title)
-
-    cb = plt.colorbar(mesh)
+    ax.set_title(title)
+    cb = fig.colorbar(mesh, ax=ax)
     cb.set_label(label)
-
-    if overlay:
-        for i, (name, surf) in enumerate(overlay.items()):
-            plt.plot(r, surf, label=name, color=color_list[i])
-        plt.legend(fontsize=8, ncols=2)
-
-    savefig(outpath)
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=220)
+    plt.close(fig)
 
 
 def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: int) -> None:
@@ -1257,6 +1376,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         if k in data:
             overlay[key] = data[k]
 
+    print("Plotting snow surfaces")
     pcolor_r_z(
         r, z_over_r, data["T_K"],
         f"Vertical temperature and snow surfaces, snapshot {snap_index}",
@@ -1276,6 +1396,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         ("survival_H2O", "H2O survival"),
     ]:
         if key in data:
+            print(f"Plotting {key}")
             pcolor_r_z(
                 r, z_over_r, data[key],
                 f"{title}, snapshot {snap_index}",
@@ -1343,36 +1464,49 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
 
     hidden_frac = np.clip(hidden_frac, 0.0, 1.0)
                
+    gas_frac = np.full_like(co_tot, np.nan, dtype=float)
+    np.divide(
+        data["surfbin_CO_gas"],
+        co_tot,
+        out=gas_frac,
+        where=co_tot > co_floor,
+    )
+    gas_frac = np.clip(gas_frac, 0.0, 1.0)
+
+    print("Plotting CO gas fraction")
     pcolor_r_z(
-        r, z_over_r, data["surfbin_CO_gas"] / co_tot,
+        r, z_over_r, gas_frac,
         f"CO gas fraction, snapshot {snap_index}",
-        r"$\Sigma_{\rm{CO,\, gas}}/\Sigma_{\rm CO}$",
+        r"$\Sigma_{\rm CO,gas}/\Sigma_{\rm CO}$",
         Path(f"{analysis_dir}/selected_2d_co_gas_frac.png"),
         log_value=True,
         overlay=None,
+        vmin=-6,
+        vmax=0,
     )
-    # pcolor_r_z(
-    #     r, z_over_r, hidden_frac,
-    #     f"Hidden CO fraction, snapshot {snap_index}",
-    #     r"$\Sigma_{\rm{CO,\, hidden}}/\Sigma_{\rm CO}$",
-    #     Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
-    #     log_value=True,
-    #     overlay=None,
-    #     vmin=-6, vmax=0,
-    # )
+    print("Plotting hidden CO fraction")
     pcolor_r_z(
-        r,
-        z_over_r,
-        hidden_frac,
+        r, z_over_r, hidden_frac,
         f"Hidden CO fraction, snapshot {snap_index}",
         r"$\Sigma_{\rm CO,hidden}/\Sigma_{\rm CO}$",
         Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
-        log_value=False,
+        log_value=True,
         overlay=None,
-        vmin=0.0,
-        vmax=1.0,
-        cmap="viridis",
+        vmin=-6, vmax=0,
     )
+    # pcolor_r_z(
+    #     r,
+    #     z_over_r,
+    #     hidden_frac,
+    #     f"Hidden CO fraction, snapshot {snap_index}",
+    #     r"$\Sigma_{\rm CO,hidden}/\Sigma_{\rm CO}$",
+    #     Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
+    #     log_value=False,
+    #     overlay=None,
+    #     vmin=0.0,
+    #     vmax=1.0,
+    #     cmap="magma",
+    # )
 
 
     bud = compute_volatile_budgets(data, collapse_vertical=False)
@@ -1387,27 +1521,27 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     R = np.broadcast_to(r[:, None], z_over_r.shape)
     
     def plot_2d_quantity(quantity, title, cbar_label, savestr, log=False, vmin=None, vmax=None):
-        q = np.asarray(quantity, dtype=float)
-    
-        if log:
-            positive = q[np.isfinite(q) & (q > 0)]
-            floor = positive.min() * 1e-3 if positive.size else 1e-300
-            qplot = np.log10(np.maximum(q, floor))
-            cbar_label = r"$\log_{10}$ " + cbar_label
-        else:
-            qplot = q
-    
         fig, ax = plt.subplots(figsize=(8, 5))
-        mesh = ax.pcolormesh(R, z_over_r, qplot, shading="auto", vmin=vmin, vmax=vmax)
-        ax.set_xscale("log")
-        ax.set_xlabel("Radius [au]")
-        ax.set_ylabel("z/r")
+        mesh, label = pcolor_r_z_on_axis(
+            ax,
+            r,
+            z_over_r,
+            quantity,
+            cb_label=cbar_label,
+            log_value=log,
+            overlay=None,
+            vmin=vmin,
+            vmax=vmax,
+            cmap="magma",
+        )
         ax.set_title(title)
         cb = fig.colorbar(mesh, ax=ax)
-        cb.set_label(cbar_label)
-        plt.tight_layout()
-        savefig(savestr)
+        cb.set_label(label)
+        fig.tight_layout()
+        fig.savefig(Path(savestr).with_suffix(".png"), dpi=220)
+        plt.close(fig)
 
+    print("Plotting small-grain volatile ice")
     plot_2d_quantity(
         small_volatile_2d,
         "Small-grain volatile ice",
@@ -1416,6 +1550,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         log=True,
     )
     
+    print("Plotting pebble volatile ice")
     plot_2d_quantity(
         pebble_volatile_2d,
         "Pebble volatile ice",
@@ -1430,6 +1565,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     small_c_o_2d_masked = np.where(small_mask_2d, small_c_o_2d, np.nan)
     pebble_c_o_2d_masked = np.where(pebble_mask_2d, pebble_c_o_2d, np.nan)
     
+    print("Plotting small-grain volatile C/O")
     plot_2d_quantity(
         small_c_o_2d_masked,
         "Small-grain volatile C/O",
@@ -1440,6 +1576,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         vmax=1,
     )
     
+    print("Plotting pebble volatile C/O")
     plot_2d_quantity(
         pebble_c_o_2d_masked,
         "Pebble volatile C/O",
@@ -1533,6 +1670,270 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     savefig(f"{analysis_dir}/co_partition.png")
 
 
+
+# -----------------------------
+# Paper-facing summary plots
+# -----------------------------
+CO_CHANNEL_LABELS = {
+    "CO_pure": "pure CO",
+    "CO_at_CO2": r"CO@CO$_2$",
+    "CO_at_H2O": r"CO@H$_2$O",
+}
+
+CO_CHANNEL_COLORS = {
+    "CO_pure": color_list[0],
+    "CO_at_CO2": color_list[1],
+    "CO_at_H2O": color_list[2],
+}
+
+
+def make_paper_final_1d_summary(df: pd.DataFrame, analysis_dir: Path, snap_index: int) -> None:
+    """
+    Paper-facing radial summary for one selected snapshot:
+      (a) CO partition by reservoir,
+      (b) carrier-resolved volatile C/O.
+    """
+    if "r_au" not in df.columns:
+        return
+
+    df = add_volatile_budget_columns_1d(df)
+    r = df["r_au"].to_numpy(dtype=float)
+
+    co_gas = _col(df, "CO_gas")
+    co_pure = _col(df, "CO_pure_ice_pebble") + _col(df, "CO_pure_ice_small")
+    co_at_co2 = _col(df, "CO_at_CO2_ice_pebble") + _col(df, "CO_at_CO2_ice_small")
+    co_at_h2o = _col(df, "CO_at_H2O_ice_pebble") + _col(df, "CO_at_H2O_ice_small")
+    co_total = co_gas + co_pure + co_at_co2 + co_at_h2o
+
+    denom = np.maximum(co_total, EPS)
+    co_floor = 1.0e-10 * max(float(np.nanmax(co_total)), EPS)
+    good = co_total > co_floor
+
+    gas_frac = np.where(good, co_gas / denom, np.nan)
+    pure_frac = np.where(good, co_pure / denom, np.nan)
+    co2_frac = np.where(good, co_at_co2 / denom, np.nan)
+    h2o_frac = np.where(good, co_at_h2o / denom, np.nan)
+    hidden_frac = np.where(good, (co_at_co2 + co_at_h2o) / denom, np.nan)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.8), constrained_layout=True)
+
+    ax = axes[0]
+    ax.semilogx(r, gas_frac, label="gas CO", color=color_list[5], linewidth=2.0)
+    ax.semilogx(r, pure_frac, label="pure CO ice", color=CO_CHANNEL_COLORS["CO_pure"], linewidth=2.0)
+    ax.semilogx(r, co2_frac, label=CO_CHANNEL_LABELS["CO_at_CO2"], color=CO_CHANNEL_COLORS["CO_at_CO2"], linewidth=2.0)
+    ax.semilogx(r, h2o_frac, label=CO_CHANNEL_LABELS["CO_at_H2O"], color=CO_CHANNEL_COLORS["CO_at_H2O"], linewidth=2.0)
+    ax.set_xlabel("Radius [au]")
+    ax.set_ylabel("Fraction of local CO")
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_title("(a) Local CO partitioning")
+    ax.legend(frameon=True, fontsize=8)
+    ax.grid(True, which="both", alpha=0.25)
+
+    ax = axes[1]
+    ax.semilogx(r, df["C_over_O_pebble_masked"], label="pebble C/O", color=color_list[0], linewidth=2.0)
+    ax.semilogx(r, df["C_over_O_small_masked"], label="small-grain C/O", color=color_list[1], linewidth=2.0)
+    ax.semilogx(r, hidden_frac, label="hidden CO fraction", color=color_list[2], linewidth=2.0, linestyle="--")
+    ax.set_xlabel("Radius [au]")
+    ax.set_ylabel("Ratio / fraction")
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_title("(b) Carrier composition")
+    ax.legend(frameon=True, fontsize=8)
+    ax.grid(True, which="both", alpha=0.25)
+
+    fig.savefig(Path(analysis_dir) / "paper_radial_co_and_carrier_composition.png", dpi=240)
+    plt.close(fig)
+
+
+def make_paper_cumulative_release_profile(
+    snapshots: Sequence[SnapshotInfo],
+    analysis_dir: Path,
+) -> None:
+    """Paper-facing cumulative CO release profile using all selected snapshots."""
+    if not snapshots:
+        return
+
+    df0 = read_snapshot(snapshots[0].path)
+    if "r_au" not in df0.columns:
+        return
+
+    r = df0["r_au"].to_numpy(dtype=float)
+    dlnr = _dlnr_from_centers(r)
+
+    channels = [
+        ("dM_CO_pure", "CO_pure"),
+        ("dM_CO_at_CO2", "CO_at_CO2"),
+        ("dM_CO_at_H2O", "CO_at_H2O"),
+    ]
+
+    cumulative_by_channel: Dict[str, np.ndarray] = {}
+    have_any = False
+    for col, channel in channels:
+        cumulative = np.zeros_like(r, dtype=float)
+        have_channel = False
+        for snap in snapshots:
+            df = read_snapshot(snap.path)
+            if col in df.columns:
+                cumulative += df[col].to_numpy(dtype=float)
+                have_channel = True
+        if have_channel:
+            cumulative_by_channel[channel] = cumulative
+            have_any = True
+
+    if not have_any:
+        return
+
+    fig, ax = plt.subplots(figsize=(8.6, 4.8))
+    for channel in ["CO_pure", "CO_at_CO2", "CO_at_H2O"]:
+        if channel not in cumulative_by_channel:
+            continue
+        profile = cumulative_by_channel[channel] / np.maximum(dlnr, EPS) / MEARTH
+        ax.semilogx(
+            r,
+            profile,
+            label=CO_CHANNEL_LABELS[channel],
+            color=CO_CHANNEL_COLORS[channel],
+            linewidth=2.0,
+        )
+
+    ax.set_xlabel("Radius [au]")
+    ax.set_ylabel(r"$dM_{\rm CO,rel}^{\rm cum}/d\ln r$ [$M_\oplus$]")
+    ax.set_title("Cumulative CO release by ice reservoir")
+    ax.legend(frameon=True)
+    ax.grid(True, which="both", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(Path(analysis_dir) / "paper_cumulative_release_profile.png", dpi=240)
+    plt.close(fig)
+
+
+def make_paper_2d_morphology(
+    data: Dict[str, np.ndarray],
+    analysis_dir: Path,
+    snap_index: int,
+) -> None:
+    """
+    Paper-facing 2D morphology figure for the selected snapshot:
+      (a) temperature and snow surfaces,
+      (b) hidden CO fraction,
+      (c) CO@CO2 surface density,
+      (d) CO@H2O surface density.
+    """
+    required = {"r_au", "z_over_r", "T_K"}
+    if not required.issubset(data):
+        return
+
+    r = data["r_au"]
+    z_over_r = data["z_over_r"]
+
+    snow_label_map = {
+        "CO_pure": "pure CO",
+        "CO_at_CO2": r"CO@CO$_2$",
+        "CO_at_H2O": r"CO@H$_2$O",
+        "CO2_pure": r"pure CO$_2$",
+        "CO2_at_H2O": r"CO$_2$@H$_2$O",
+        "H2O": r"H$_2$O",
+    }
+    overlay = {}
+    for key, label in snow_label_map.items():
+        k = f"snow_surface_z_over_r_{key}"
+        if k in data:
+            overlay[label] = data[k]
+
+    co_at_co2 = _sum_fields(
+        data,
+        ["surfbin_CO_at_CO2_ice_pebble", "surfbin_CO_at_CO2_ice_small"],
+    )
+    co_at_h2o = _sum_fields(
+        data,
+        ["surfbin_CO_at_H2O_ice_pebble", "surfbin_CO_at_H2O_ice_small"],
+    )
+    co_hidden = co_at_co2 + co_at_h2o
+    co_total = _sum_fields(
+        data,
+        [
+            "surfbin_CO_gas",
+            "surfbin_CO_pure_ice_pebble",
+            "surfbin_CO_pure_ice_small",
+            "surfbin_CO_at_CO2_ice_pebble",
+            "surfbin_CO_at_CO2_ice_small",
+            "surfbin_CO_at_H2O_ice_pebble",
+            "surfbin_CO_at_H2O_ice_small",
+        ],
+    )
+
+    co_floor = 1.0e-12 * max(float(np.nanmax(co_total)), EPS)
+    hidden_frac = np.full_like(co_total, np.nan, dtype=float)
+    np.divide(co_hidden, co_total, out=hidden_frac, where=co_total > co_floor)
+    hidden_frac = np.clip(hidden_frac, 0.0, 1.0)
+
+    fig, axes = plt.subplots(2, 2, figsize=(12.0, 8.0), constrained_layout=True)
+
+    panels = [
+        (
+            axes[0, 0],
+            data["T_K"],
+            "Temperature [K]",
+            False,
+            None,
+            None,
+            temp_cmap,
+            overlay,
+            "(a) Temperature and snow surfaces",
+        ),
+        (
+            axes[0, 1],
+            hidden_frac,
+            r"$\Sigma_{\rm CO,hidden}/\Sigma_{\rm CO}$",
+            True,
+            -6,
+            0,
+            "viridis",
+            None,
+            "(b) Hidden CO fraction",
+        ),
+        (
+            axes[1, 0],
+            co_at_co2,
+            r"$\Sigma_{\rm CO@CO_2}$ [g cm$^{-2}$]",
+            True,
+            -12,
+            -2,
+            "magma",
+            None,
+            r"(c) CO@CO$_2$ ice",
+        ),
+        (
+            axes[1, 1],
+            co_at_h2o,
+            r"$\Sigma_{\rm CO@H_2O}$ [g cm$^{-2}$]",
+            True,
+            -12,
+            -2,
+            "magma",
+            None,
+            r"(d) CO@H$_2$O ice",
+        ),
+    ]
+
+    for ax, values, cblabel, log_value, vmin, vmax, cmap, panel_overlay, title in panels:
+        mesh, label = pcolor_r_z_on_axis(
+            ax,
+            r,
+            z_over_r,
+            values,
+            cb_label=cblabel,
+            log_value=log_value,
+            overlay=panel_overlay,
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+        )
+        ax.set_title(title)
+        cb = fig.colorbar(mesh, ax=ax)
+        cb.set_label(label)
+
+    fig.savefig(Path(analysis_dir) / "paper_fiducial_morphology.png", dpi=240)
+    plt.close(fig)
+
 # -----------------------------
 # Summary metrics
 # -----------------------------
@@ -1609,6 +2010,11 @@ def main() -> None:
     selected_df = read_snapshot(selected.path)
     diag = read_diagnostics(output_dir)
 
+    ### for paper ####
+    make_paper_final_1d_summary(selected_df, analysis_dir, selected.index)
+    make_paper_cumulative_release_profile(snapshots, analysis_dir)
+
+    ### additional diagnostics / appendix ####
     make_diagnostics_plots(diag, analysis_dir)
     make_final_1d_plots(selected_df, analysis_dir, selected.index)
 
@@ -1624,6 +2030,11 @@ def main() -> None:
         if snaps2d:
             nearest = min(snaps2d, key=lambda s: abs(s.index - selected.index))
             data2d = read_2d_snapshot(nearest.path)
+
+            ### for paper ####
+            make_paper_2d_morphology(data2d, analysis_dir, nearest.index)
+
+            ### additional diagnostics / appendix ####
             make_2d_plots(data2d, analysis_dir, nearest.index)
 
     write_summary_metrics(selected_df, diag, analysis_dir / "summary_metrics.csv", selected.index)
