@@ -1992,7 +1992,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--analysis-dir", type=str, default=None, help="Plot output directory. Default: <output_dir>/analysis_plots")
     parser.add_argument("--snap", type=str, default="latest", help="Snapshot: latest, first, middle, or integer index.")
     parser.add_argument("--max-time-radius-snaps", type=int, default=200, help="Maximum snapshots used for time-radius plots.")
-    parser.add_argument("--skip-2d", action="store_true", help="Skip 2D npz plots.")
     return parser.parse_args()
 
 
@@ -2025,17 +2024,18 @@ def main() -> None:
         tr_snaps = snapshots
     make_time_radius_plots(tr_snaps, analysis_dir)
 
-    if not args.skip_2d:
-        snaps2d = list_snapshots_2d(output_dir)
-        if snaps2d:
-            nearest = min(snaps2d, key=lambda s: abs(s.index - selected.index))
-            data2d = read_2d_snapshot(nearest.path)
+    snaps2d = list_snapshots_2d(output_dir)
+    if snaps2d:
+        nearest = min(snaps2d, key=lambda s: abs(s.index - selected.index))
+        data2d = read_2d_snapshot(nearest.path)
 
-            ### for paper ####
-            make_paper_2d_morphology(data2d, analysis_dir, nearest.index)
+        ### for paper ####
+        print("Plotting morphology...")
+        make_paper_2d_morphology(data2d, analysis_dir, nearest.index)
 
-            ### additional diagnostics / appendix ####
-            make_2d_plots(data2d, analysis_dir, nearest.index)
+        ### additional diagnostics / appendix ####
+        print("Plotting 2D plots...")
+        make_2d_plots(data2d, analysis_dir, nearest.index)
 
     write_summary_metrics(selected_df, diag, analysis_dir / "summary_metrics.csv", selected.index)
     print(f"Analysis complete. Plots written to: {analysis_dir}")

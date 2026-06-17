@@ -23,7 +23,8 @@ Generate YAMLs:
         --base-yaml example_mist_params.yaml \
         --sweep-dir sweep_yamls \
         --run-root sweep_outputs \
-        --model-script mixed_ice_transport_1p1d.py
+        --model-script mixed_ice_transport_1p1d.py\
+        --save-2d
 
 Run the sweep:
 
@@ -36,7 +37,7 @@ Analyze after runs complete:
         --analysis-dir sweep_analysis
         
 Single command, e.g.:
-python mixed_ice_sweep.py generate --base-yaml example_mist_params.yaml --sweep-dir sweep_yamls --run-root sweep_outputs --model-script mixed_ice_transport_1p1d.py
+python mixed_ice_sweep.py generate --base-yaml example_mist_params.yaml --save-2d --sweep-dir sweep_yamls --run-root sweep_outputs --model-script mixed_ice_transport_1p1d.py
 bash sweep_yamls/commands.sh
 python mixed_ice_sweep.py analyze --sweep-dir sweep_yamls --analysis-dir sweep_analysis
 
