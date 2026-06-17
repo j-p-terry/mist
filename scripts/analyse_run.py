@@ -722,6 +722,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int) -
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Surface density [g cm$^{-2}$]")
     plt.title(f"Volatile reservoir profiles, snapshot {snap_index}")
+    plt.ylim(bottom=1e-8)
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(analysis_dir / "final_volatile_profiles.png")
@@ -740,6 +741,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int) -
             i += 1
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Surface density [g cm$^{-2}$]")
+    plt.ylim(bottom=1e-8)
     plt.title(f"Carrier-resolved solid volatiles, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
@@ -816,6 +818,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int) -
     plt.semilogx(r, co2_at_h2o, label="CO2@H2O Ice", color=color_list[3])
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Surface density [g cm$^{-2}$]")
+    plt.ylim(bottom=1e-8)
     plt.title(f"CO ices, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
