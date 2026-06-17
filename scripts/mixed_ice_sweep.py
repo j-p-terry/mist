@@ -1435,6 +1435,183 @@ def plot_vertical(df: pd.DataFrame, analysis_dir: Path) -> None:
     plt.legend()
     plt.grid(True, alpha=0.3)
     savefig(analysis_dir / "vertical_temperature_sensitivity.png")
+    
+    
+def plot_final_co_budget_stacked(
+    df: pd.DataFrame,
+    analysis_dir: Path,
+    names: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    """
+    Make a stacked final CO budget figure.
+
+    The stacked components are:
+        - gas-phase CO
+        - pure/unhidden CO ice
+        - CO trapped in CO2-associated ice
+        - CO trapped in H2O-associated ice
+
+    These components sum to the total CO column by construction:
+        CO_total = CO_gas + CO_pure_ice + CO_at_CO2_ice + CO_at_H2O_ice
+
+    This is intended to replace/augment the older hidden-vs-gas bar plot,
+    which did not show where the rest of the CO budget was stored.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Completed sweep metrics table, usually `ok` inside analyze_sweep.
+        Must contain run_name and output_dir.
+    analysis_dir : pathlib.Path
+        Directory where the plot and companion CSV are written.
+    names : sequence of str, optional
+        Run order to plot. If None, uses a compact ice-suite/default order.
+    filename : str
+        Name of the output PNG.
+
+    Returns
+    -------
+    budget_df : pandas.DataFrame
+        Table of global CO budget fractions and masses for the plotted runs.
+    """
+
+    if names is None:
+        names = [
+            "ice_pure_snowline",
+            "ice_low_trap",
+            "fiducial",
+            "ice_co2_trap",
+            "ice_h2o_trap",
+            "fiducial_w_backreact",
+            "uncapped",
+        ]
+
+    sub = ordered(df, names)
+    if sub.empty:
+        return pd.DataFrame()
+
+    rows = []
+
+    for _, row in sub.iterrows():
+        run_name = row["run_name"]
+        outdir = Path(row["output_dir"])
+        snaps = snapshot_paths(outdir)
+
+        if not snaps:
+            continue
+
+        final_df = read_snapshot(snaps[-1])
+        r_au = final_df["r_au"].to_numpy(dtype=float)
+        area = annulus_area_cm2(r_au)
+
+        # CO components by reservoir.
+        co_gas = col(final_df, "CO_gas")
+
+        co_pure = (
+            col(final_df, "CO_pure_ice_pebble")
+            + col(final_df, "CO_pure_ice_small")
+        )
+
+        co_at_co2 = (
+            col(final_df, "CO_at_CO2_ice_pebble")
+            + col(final_df, "CO_at_CO2_ice_small")
+        )
+
+        co_at_h2o = (
+            col(final_df, "CO_at_H2O_ice_pebble")
+            + col(final_df, "CO_at_H2O_ice_small")
+        )
+
+        m_gas = float(np.nansum(area * co_gas))
+        m_pure = float(np.nansum(area * co_pure))
+        m_at_co2 = float(np.nansum(area * co_at_co2))
+        m_at_h2o = float(np.nansum(area * co_at_h2o))
+
+        m_total = m_gas + m_pure + m_at_co2 + m_at_h2o
+        denom = max(m_total, EPS)
+
+        rows.append(
+            {
+                "run_name": run_name,
+                "group": row.get("group", ""),
+                "M_CO_gas": m_gas,
+                "M_CO_pure_ice": m_pure,
+                "M_CO_at_CO2": m_at_co2,
+                "M_CO_at_H2O": m_at_h2o,
+                "M_CO_total": m_total,
+                "frac_CO_gas": m_gas / denom,
+                "frac_CO_pure_ice": m_pure / denom,
+                "frac_CO_at_CO2": m_at_co2 / denom,
+                "frac_CO_at_H2O": m_at_h2o / denom,
+                "frac_CO_hidden": (m_at_co2 + m_at_h2o) / denom,
+                "frac_CO_solid_total": (m_pure + m_at_co2 + m_at_h2o) / denom,
+            }
+        )
+
+    budget_df = pd.DataFrame(rows)
+
+    if budget_df.empty:
+        return budget_df
+
+    # Save the underlying numbers for captions/tables.
+    analysis_dir = Path(analysis_dir)
+    budget_df.to_csv(analysis_dir / "final_co_budget_stacked.csv", index=False)
+
+    # Pretty display labels for the main figure.
+    label_map = {
+        "ice_pure_snowline": "pure\nsnowline",
+        "ice_low_trap": "low\ntrap",
+        "fiducial": "fiducial",
+        "ice_co2_trap": "CO$_2$\ntrap",
+        "ice_h2o_trap": "H$_2$O\ntrap",
+        "fiducial_w_backreact": "fiducial\n+ backreaction",
+        "uncapped": "uncapped",
+    }
+
+    x = np.arange(len(budget_df))
+    xticklabels = [label_map.get(name, name) for name in budget_df["run_name"]]
+
+    # Use a reservoir-consistent color scheme:
+    # gas in gray, pure CO/CO@CO2/CO@H2O matching the release-channel colors.
+    components = [
+        ("frac_CO_gas", "gas CO", color_list[5]),
+        ("frac_CO_pure_ice", "pure CO ice", color_list[0]),
+        ("frac_CO_at_CO2", r"CO@CO$_2$", color_list[1]),
+        ("frac_CO_at_H2O", r"CO@H$_2$O", color_list[2]),
+    ]
+
+    fig, ax = plt.subplots(figsize=(10, 5.2))
+
+    bottom = np.zeros(len(budget_df), dtype=float)
+    for colname, label, color in components:
+        values = budget_df[colname].to_numpy(dtype=float)
+        ax.bar(
+            x,
+            values,
+            bottom=bottom,
+            label=label,
+            color=color,
+            edgecolor="black",
+            linewidth=0.4,
+        )
+        bottom += values
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(xticklabels, rotation=25, ha="right")
+    ax.set_ylabel("Fraction of total CO")
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title("Final global CO budget")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.18),
+        ncol=4,
+        frameon=True,
+    )
+
+    savefig(analysis_dir / "ice_suite_co_budget_stacked.png")
+
+    return budget_df
 
 
 def plot_vdiff(df: pd.DataFrame, analysis_dir: Path) -> None:
@@ -1574,6 +1751,7 @@ def analyze_sweep(sweep_dir: Path, analysis_dir: Path) -> None:
     plot_vdiff(ok, analysis_dir)
     plot_release_temperature(ok, analysis_dir)
     plot_freezeout(ok, analysis_dir)
+    plot_final_co_budget_stacked(ok, analysis_dir)
     write_key_results(ok, analysis_dir)
 
     print(f"Analyzed {len(ok)} completed runs out of {len(metrics)} total.")
