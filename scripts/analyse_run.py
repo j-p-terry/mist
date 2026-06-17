@@ -1192,28 +1192,53 @@ def pcolor_r_z(
     outpath: Path,
     log_value: bool = False,
     overlay: Optional[Dict[str, np.ndarray]] = None,
-    vmin: Optiona[float] = None,
+    vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     cmap: str = "magma",
 ) -> None:
     R = np.broadcast_to(r[:, None], z_over_r.shape)
-    plot_values = safe_log10(values) if log_value else values
-    label = f"log10({cb_label})" if log_value else cb_label
+
+    values = np.asarray(values, dtype=float)
+
+    if log_value:
+        plot_values = np.full_like(values, np.nan, dtype=float)
+        good = np.isfinite(values) & (values > 0.0)
+        plot_values[good] = np.log10(values[good])
+        label = rf"$\log_{{10}}({cb_label})$"
+    else:
+        plot_values = values
+        label = cb_label
+
+    if z_over_r.ndim == 2:
+        d0 = np.diff(z_over_r, axis=0)
+        d1 = np.diff(z_over_r, axis=1)
+        mono0 = np.all(d0 >= 0) or np.all(d0 <= 0)
+        mono1 = np.all(d1 >= 0) or np.all(d1 <= 0)
+        if not (mono0 and mono1):
+            print(f"[pcolor_r_z] non-monotonic z_over_r for: {outpath}")
 
     plt.figure(figsize=(9, 5))
-    mesh = plt.pcolormesh(R, z_over_r, plot_values, shading="auto", vmin=vmin, vmax=vmax, cmap=cmap, rasterized=True)
+    mesh = plt.pcolormesh(
+        R,
+        z_over_r,
+        plot_values,
+        shading="auto",
+        vmin=vmin,
+        vmax=vmax,
+        cmap=cmap,
+        rasterized=True,
+    )
     plt.xscale("log")
     plt.xlabel("Radius [au]")
     plt.ylabel("z/r")
     plt.title(title)
+
     cb = plt.colorbar(mesh)
     cb.set_label(label)
 
     if overlay:
-        i = 0
-        for name, surf in overlay.items():
+        for i, (name, surf) in enumerate(overlay.items()):
             plt.plot(r, surf, label=name, color=color_list[i])
-            i += 1
         plt.legend(fontsize=8, ncols=2)
 
     savefig(outpath)
@@ -1288,10 +1313,36 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
                 overlay=None,
                 vmin=-12, vmax=-2,
             )
-    co_tot = data["surfbin_CO_gas"] +\
-               data["surfbin_CO_pure_ice_pebble"] + data["surfbin_CO_pure_ice_small"] + \
-               data["surfbin_CO_at_CO2_ice_pebble"] + data["surfbin_CO_at_H2O_ice_pebble"] +\
-               data["surfbin_CO_at_CO2_ice_small"] + data["surfbin_CO_at_H2O_ice_small"]
+               
+    hidden_co = (
+        data["surfbin_CO_at_CO2_ice_pebble"]
+        + data["surfbin_CO_at_H2O_ice_pebble"]
+        + data["surfbin_CO_at_CO2_ice_small"]
+        + data["surfbin_CO_at_H2O_ice_small"]
+    )
+
+    co_tot = (
+        data["surfbin_CO_gas"]
+        + data["surfbin_CO_pure_ice_pebble"]
+        + data["surfbin_CO_pure_ice_small"]
+        + data["surfbin_CO_at_CO2_ice_pebble"]
+        + data["surfbin_CO_at_H2O_ice_pebble"]
+        + data["surfbin_CO_at_CO2_ice_small"]
+        + data["surfbin_CO_at_H2O_ice_small"]
+    )
+
+    co_floor = 1.0e-12 * np.nanmax(co_tot)
+
+    hidden_frac = np.full_like(co_tot, np.nan, dtype=float)
+    np.divide(
+        hidden_co,
+        co_tot,
+        out=hidden_frac,
+        where=co_tot > co_floor,
+    )
+
+    hidden_frac = np.clip(hidden_frac, 0.0, 1.0)
+               
     pcolor_r_z(
         r, z_over_r, data["surfbin_CO_gas"] / co_tot,
         f"CO gas fraction, snapshot {snap_index}",
@@ -1300,15 +1351,27 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         log_value=True,
         overlay=None,
     )
+    # pcolor_r_z(
+    #     r, z_over_r, hidden_frac,
+    #     f"Hidden CO fraction, snapshot {snap_index}",
+    #     r"$\Sigma_{\rm{CO,\, hidden}}/\Sigma_{\rm CO}$",
+    #     Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
+    #     log_value=True,
+    #     overlay=None,
+    #     vmin=-6, vmax=0,
+    # )
     pcolor_r_z(
-        r, z_over_r, (data["surfbin_CO_at_CO2_ice_pebble"] + data["surfbin_CO_at_H2O_ice_pebble"] +\
-                      data["surfbin_CO_at_CO2_ice_small"] + data["surfbin_CO_at_H2O_ice_small"]) / co_tot,
+        r,
+        z_over_r,
+        hidden_frac,
         f"Hidden CO fraction, snapshot {snap_index}",
-        r"$\Sigma_{\rm{CO,\, hidden}}/\Sigma_{\rm CO}$",
+        r"$\Sigma_{\rm CO,hidden}/\Sigma_{\rm CO}$",
         Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
-        log_value=True,
+        log_value=False,
         overlay=None,
-        vmin=-12, vmax=-2,
+        vmin=0.0,
+        vmax=1.0,
+        cmap="viridis",
     )
 
 
