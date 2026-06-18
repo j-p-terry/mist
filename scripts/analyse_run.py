@@ -705,7 +705,8 @@ def add_volatile_budget_columns_1d(df):
 # -----------------------------
 # 1D snapshot plots
 # -----------------------------
-def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int) -> None:
+def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
+                        plot_entrap_surface: bool = True) -> None:
     if "r_au" not in df.columns:
         return
     r = df["r_au"]
@@ -773,10 +774,13 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int) -
     savefig(f"{analysis_dir}/final_c_o_profiles.png")
 
     snow_cols = [c for c in df.columns if c.startswith("snow_surface_z_over_r_")]
+    if not plot_entrap_surface:
+        snow_cols = [c for c in snow_cols if "_at_" not in c]
     if snow_cols:
         i = 0
         this_color_list = color_list[:]
         plt.figure(figsize=(9, 5))
+        # breakpoint()
         for col in snow_cols:
             this_color_list = get_color_list(this_color_list, i)
             label = col.replace("snow_surface_z_over_r_", "")
@@ -787,7 +791,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int) -
             plt.semilogx(r, df["H_over_r"], label="H/r", color="gray", ls='--')
         plt.xlabel("Radius [au]")
         plt.ylabel("z/r")
-        plt.title(f"Modeled snow surfaces, snapshot {snap_index}")
+        plt.title(f"Modeled release surfaces, snapshot {snap_index}")
         plt.legend(ncols=2, fontsize=8)
         plt.grid(True, which="both", alpha=0.3)
         savefig(f"{analysis_dir}/final_snow_surfaces.png")
@@ -803,11 +807,11 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int) -
             plt.semilogx(r, df[col]/MEARTH, label=label, color=this_color_list[i])
             i += 1
         plt.xlabel("Radius [au]")
-        plt.ylabel(r"$dM_{\rm CO,release}$  [M$_{\oplus}$]")
-        plt.title(f"CO mass release, snapshot {snap_index}")
+        plt.ylabel(r"$dM_{\rm ice,release}$  [M$_{\oplus}$]")
+        plt.title(f"Ice mass release, snapshot {snap_index}")
         plt.legend(ncols=2, fontsize=8)
         plt.grid(True, which="both", alpha=0.3)
-        savefig(f"{analysis_dir}/co_release.png")
+        savefig(f"{analysis_dir}/ice_release.png")
 
 
     co_pure = df["CO_pure_ice_pebble"] + df["CO_pure_ice_small"]
@@ -1096,6 +1100,8 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ("dM_CO_pure", "CO pure"),
         ("dM_CO_at_CO2", "CO@CO2"),
         ("dM_CO_at_H2O", "CO@H2O"),
+        ("dM_CO2_pure", "CO2 pure"),
+        ("dM_CO2_at_H2O", "CO2@H2O"),
     ]
 
     plt.figure(figsize=(9, 5))
@@ -1117,11 +1123,11 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         i += 1
 
     plt.xlabel("Radius [au]")
-    plt.ylabel(r"$dM_{\rm CO,release}^{\rm cum}/d\ln r$ [M$_\oplus$]")
-    plt.title("Cumulative CO release by reservoir")
+    plt.ylabel(r"$dM_{\rm ice,release}^{\rm cum}/d\ln r$ [M$_\oplus$]")
+    plt.title("Cumulative ice release by reservoir")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(analysis_dir / "total_co_release_dM_dlnr.png")
+    savefig(analysis_dir / "total_ice_release_dM_dlnr.png")
 
     plt.figure(figsize=(9, 5))
     i = 0
@@ -1298,6 +1304,7 @@ def pcolor_r_z_on_axis(
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     cmap: str = "magma",
+    plot_entrap_surface: bool = True,
 ):
     """Plot a 2D r--z/r field on an existing axis using explicit cell edges."""
     R_edges, Z_edges = _rz_cell_edges(r, z_over_r)
@@ -1320,6 +1327,8 @@ def pcolor_r_z_on_axis(
 
     if overlay:
         for i, (name, surf) in enumerate(overlay.items()):
+            if not plot_entrap_surface and "pure" in name:
+                name = name.split("pure ")[1]
             ax.plot(r, surf, label=name, color=color_list[i], linewidth=1.4)
         ax.legend(fontsize=8, ncols=2, frameon=True)
 
@@ -1363,7 +1372,8 @@ def pcolor_r_z(
     plt.close(fig)
 
 
-def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: int) -> None:
+def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: int, 
+                  plot_entrap_surface: bool = True) -> None:
     if not {"r_au", "z_over_r", "T_K"}.issubset(data):
         return
 
@@ -1373,13 +1383,15 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     overlay = {}
     for key in ["CO_pure", "CO_at_CO2", "CO_at_H2O", "CO2_pure", "CO2_at_H2O", "H2O"]:
         k = f"snow_surface_z_over_r_{key}"
+        if not plot_entrap_surface and "_at_" in key:
+            continue
         if k in data:
             overlay[key] = data[k]
 
     print("Plotting snow surfaces")
     pcolor_r_z(
         r, z_over_r, data["T_K"],
-        f"Vertical temperature and snow surfaces, snapshot {snap_index}",
+        f"Vertical temperature and release surfaces, snapshot {snap_index}",
         "T [K]",
         f"{analysis_dir}/selected_2d_temperature_snow_surfaces.png",
         log_value=False,
@@ -1686,6 +1698,22 @@ CO_CHANNEL_COLORS = {
     "CO_at_H2O": color_list[2],
 }
 
+VOL_CHANNEL_LABELS = {
+    "CO_pure": "pure CO",
+    "CO_at_CO2": r"CO@CO$_2$",
+    "CO_at_H2O": r"CO@H$_2$O",
+    "CO2_pure": r"pure CO$_2$",
+    "CO2_at_H2O": r"CO$_{2}$@H$_2$O",
+}
+
+VOL_CHANNEL_COLORS = {
+    "CO_pure": color_list[0],
+    "CO_at_CO2": color_list[1],
+    "CO_at_H2O": color_list[2],
+    "CO2_pure": color_list[3],
+    "CO2_at_H2O": color_list[4],
+}
+
 
 def make_paper_final_1d_summary(df: pd.DataFrame, analysis_dir: Path, snap_index: int) -> None:
     """
@@ -1763,6 +1791,8 @@ def make_paper_cumulative_release_profile(
         ("dM_CO_pure", "CO_pure"),
         ("dM_CO_at_CO2", "CO_at_CO2"),
         ("dM_CO_at_H2O", "CO_at_H2O"),
+        ("dM_CO2_pure", "CO2_pure"),
+        ("dM_CO2_at_H2O", "CO2_at_H2O"),
     ]
 
     cumulative_by_channel: Dict[str, np.ndarray] = {}
@@ -1783,21 +1813,21 @@ def make_paper_cumulative_release_profile(
         return
 
     fig, ax = plt.subplots(figsize=(8.6, 4.8))
-    for channel in ["CO_pure", "CO_at_CO2", "CO_at_H2O"]:
+    for channel in ["CO_pure", "CO_at_CO2", "CO_at_H2O", "CO2_pure", "CO2_at_H2O"]:
         if channel not in cumulative_by_channel:
             continue
         profile = cumulative_by_channel[channel] / np.maximum(dlnr, EPS) / MEARTH
         ax.semilogx(
             r,
             profile,
-            label=CO_CHANNEL_LABELS[channel],
-            color=CO_CHANNEL_COLORS[channel],
+            label=VOL_CHANNEL_LABELS[channel],
+            color=VOL_CHANNEL_COLORS[channel],
             linewidth=2.0,
         )
 
     ax.set_xlabel("Radius [au]")
-    ax.set_ylabel(r"$dM_{\rm CO,rel}^{\rm cum}/d\ln r$ [$M_\oplus$]")
-    ax.set_title("Cumulative CO release by ice reservoir")
+    ax.set_ylabel(r"$dM_{\rm ice,rel}^{\rm cum}/d\ln r$ [$M_\oplus$]")
+    ax.set_title("Cumulative ice release by ice reservoir")
     ax.legend(frameon=True)
     ax.grid(True, which="both", alpha=0.25)
     fig.tight_layout()
@@ -1809,6 +1839,7 @@ def make_paper_2d_morphology(
     data: Dict[str, np.ndarray],
     analysis_dir: Path,
     snap_index: int,
+    plot_entrap_surface: bool = True,
 ) -> None:
     """
     Paper-facing 2D morphology figure for the selected snapshot:
@@ -1835,6 +1866,8 @@ def make_paper_2d_morphology(
     overlay = {}
     for key, label in snow_label_map.items():
         k = f"snow_surface_z_over_r_{key}"
+        if not plot_entrap_surface and "_at_" in key:
+            continue
         if k in data:
             overlay[label] = data[k]
 
@@ -1877,7 +1910,7 @@ def make_paper_2d_morphology(
             None,
             temp_cmap,
             overlay,
-            "(a) Temperature and snow surfaces",
+            "(a) Temperature and release surfaces",
         ),
         (
             axes[0, 1],
@@ -1926,6 +1959,8 @@ def make_paper_2d_morphology(
             vmin=vmin,
             vmax=vmax,
             cmap=cmap,
+            plot_entrap_surface=plot_entrap_surface and "snow surface" in title,
+            
         )
         ax.set_title(title)
         cb = fig.colorbar(mesh, ax=ax)

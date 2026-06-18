@@ -540,17 +540,17 @@ def make_run_specs() -> List[Dict[str, Any]]:
                         "release_temperatures_K": {
                             "pure": 20.0,
                             "at_CO2": 60.0,
-                            "at_H2O": 120.0,
+                            "at_H2O": 130.0,
                         }
                     },
                     "CO2": {
                         "release_temperatures_K": {
                             "pure": 60.0,
-                            "at_H2O": 120.0,
+                            "at_H2O": 130.0,
                         }
                     },
                     "H2O": {
-                        "release_temperature_K": 140.0,
+                        "release_temperature_K": 130.0,
                     },
                 }
             },
@@ -565,17 +565,42 @@ def make_run_specs() -> List[Dict[str, Any]]:
                         "release_temperatures_K": {
                             "pure": 30.0,
                             "at_CO2": 85.0,
-                            "at_H2O": 150.0,
+                            "at_H2O": 170.0,
                         }
                     },
                     "CO2": {
                         "release_temperatures_K": {
                             "pure": 85.0,
-                            "at_H2O": 150.0,
+                            "at_H2O": 170.0,
                         }
                     },
                     "H2O": {
                         "release_temperature_K": 170.0,
+                    },
+                }
+            },
+        },
+        {
+            "name": "release_different",
+            "group": "release_temperature",
+            "description": "Water guest < water release temperatures.",
+            "overrides": {
+                "volatiles": {
+                    "CO": {
+                        "release_temperatures_K": {
+                            "pure": 30.0,
+                            "at_CO2": 70.0,
+                            "at_H2O": 130.0,
+                        }
+                    },
+                    "CO2": {
+                        "release_temperatures_K": {
+                            "pure": 70.0,
+                            "at_H2O": 130.0,
+                        }
+                    },
+                    "H2O": {
+                        "release_temperature_K": 150.0,
                     },
                 }
             },
@@ -1174,6 +1199,7 @@ RUN_LABELS_SINGLE = {
     "vdiff_h2o_trap_off": r"H$_2$O-rich trapping, no vapor diffusion",
     "release_cool": "cool release",
     "release_warm": "warm release",
+    "release_different": "different release",
 }
 
 RUN_LABELS_MULTILINE = {
@@ -1188,18 +1214,24 @@ RUN_LABELS_MULTILINE = {
     "vdiff_h2o_trap_off": "H$_2$O-rich\nno vapor diffusion",
     "release_cool": "cool\nrelease",
     "release_warm": "warm\nrelease",
+    "release_different": "different\nrelease",
 }
 
 CHANNEL_LABELS = {
     "CO_pure": "pure CO",
     "CO_at_CO2": r"CO@CO$_2$",
     "CO_at_H2O": r"CO@H$_2$O",
+    "CO2_pure": "pure CO",
+    "CO2_pure": r"pure CO$_2$",
+    "CO2_at_H2O": r"CO$_{2}$@H$_2$O",
 }
 
 CHANNEL_COLORS = {
     "CO_pure": color_list[0],
     "CO_at_CO2": color_list[1],
     "CO_at_H2O": color_list[2],
+    "CO2_pure": color_list[3],
+    "CO2_at_H2O": color_list[4],
 }
 
 
@@ -2071,7 +2103,7 @@ def plot_vdiff(df: pd.DataFrame, analysis_dir: Path) -> None:
 
 
 def plot_release_temperature(df: pd.DataFrame, analysis_dir: Path) -> None:
-    names = ["release_cool", "fiducial", "release_warm"]
+    names = ["release_cool", "fiducial", "release_warm", "release_different"]
     sub = ordered(df, names)
     if sub.empty:
         return
@@ -2080,8 +2112,8 @@ def plot_release_temperature(df: pd.DataFrame, analysis_dir: Path) -> None:
     w = 0.25
     plt.figure(figsize=(9, 5))
     plt.bar(x - w, sub["R50_CO_pure"], width=w, label="pure CO", color=color_list[0])
-    plt.bar(x, sub["R50_CO_at_CO2"], width=w, label="CO@CO2", color=color_list[1])
-    plt.bar(x + w, sub["R50_CO_at_H2O"], width=w, label="CO@H2O", color=color_list[2])
+    plt.bar(x, sub["R50_CO_at_CO2"], width=w, label=r"CO@CO$_{2}$", color=color_list[1])
+    plt.bar(x + w, sub["R50_CO_at_H2O"], width=w, label=r"CO@H$_{2}$O", color=color_list[2])
     plt.yscale("log")
     plt.xticks(x, sub["run_name"], rotation=30, ha="right")
     plt.ylabel(r"Median release radius $R_{50}$ [au]")
@@ -2197,6 +2229,7 @@ TABLE_RUN_LABELS = {
     "vdiff_h2o_trap_off": r"H$_2$O-rich trapping, no vapor diffusion",
     "release_cool": "cool release",
     "release_warm": "warm release",
+    "release_different": "different release",
 }
 
 

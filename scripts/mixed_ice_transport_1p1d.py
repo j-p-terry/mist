@@ -1392,7 +1392,7 @@ def release_radii(r, r_edge, dM_release):
         "total_release": total,
     }
     
-def compute_co_release(state_before, state_after, dt, grid):
+def compute_release(state_before, state_after, dt, grid):
     area = grid["area"]
     r_edge = grid["r_edge_au"]
     dlnr = np.log(r_edge[1:] / r_edge[:-1])
@@ -1409,6 +1409,14 @@ def compute_co_release(state_before, state_after, dt, grid):
         "CO_at_H2O": [
             "CO_at_H2O_ice_pebble",
             "CO_at_H2O_ice_small",
+        ],
+        "CO2_pure": [
+            "CO2_pure_ice_pebble",
+            "CO2_pure_ice_small",
+        ],
+        "CO2_at_H2O": [
+            "CO2_at_H2O_ice_pebble",
+            "CO2_at_H2O_ice_small",
         ],
     }
 
@@ -1439,6 +1447,14 @@ def compute_co_release(state_before, state_after, dt, grid):
     out["dM_CO_gas"] = dM_CO_gas
     out["Mdot_CO_gas"] = Mdot_CO_gas
     out["Mdot_dlnr_CO_gas"] = Mdot_CO_gas / dlnr
+    
+    dSigma_CO2_gas_net = state_after["CO2_gas"] - state_before["CO2_gas"]
+    dM_CO2_gas = area * dSigma_CO2_gas_net
+    Mdot_CO2_gas = dM_CO2_gas / dt
+    out["dSigma_CO2_gas"] = dSigma_CO2_gas_net
+    out["dM_CO2_gas"] = dM_CO2_gas
+    out["Mdot_CO2_gas"] = Mdot_CO2_gas
+    out["Mdot_dlnr_CO2_gas"] = Mdot_CO2_gas / dlnr
 
     return out
 
@@ -2375,13 +2391,21 @@ def run(params: Dict[str, Any]) -> None:
     release = {"Mdot_dlnr_CO_pure": None,
                "Mdot_dlnr_CO_at_CO2": None,
                "Mdot_dlnr_CO_at_H2O": None,
+               "Mdot_dlnr_CO2_pure": None,
+               "Mdot_dlnr_CO2_at_H2O": None,
                "dM_CO_pure": None,
                "dM_CO_at_CO2": None,
                "dM_CO_at_H2O": None,
+               "dM_CO2_pure": None,
+               "dM_CO2_at_H2O": None,
                "dSigma_CO_gas": None,
+               "dSigma_CO2_gas": None,
                "dM_CO_gas": None,
                "Mdot_CO_gas": None,
                "Mdot_dlnr_CO_gas": None,
+               "dM_CO2_gas": None,
+               "Mdot_CO2_gas": None,
+               "Mdot_dlnr_CO2_gas": None,
                }
 
     br_diag = {}
@@ -2440,7 +2464,7 @@ def run(params: Dict[str, Any]) -> None:
         state = transport_step(state, dt, grid, disk, carrier_coeff, params)
         state_before_phase = {k: v.copy() for k, v in state.items()}
         state = phase_relaxation_step(state, dt, vertical, params)
-        release = compute_co_release(
+        release = compute_release(
             state_before_phase,
             state,
             dt,
