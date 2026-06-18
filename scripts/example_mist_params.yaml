@@ -168,7 +168,8 @@ volatiles:
     release_temperatures_K:
       pure: 25.0
       at_CO2: 70.0
-      at_H2O: 130.0
+      # at_H2O: 130.0
+      at_H2O: 150.0
 
     transition_widths_K:
       pure: 3.0
@@ -185,7 +186,8 @@ volatiles:
 
     release_temperatures_K:
       pure: 70.0
-      at_H2O: 130.0
+      # at_H2O: 130.0
+      at_H2O: 150.0
 
     transition_widths_K:
       pure: 6.0
