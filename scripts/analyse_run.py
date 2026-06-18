@@ -1839,7 +1839,7 @@ def make_paper_2d_morphology(
     data: Dict[str, np.ndarray],
     analysis_dir: Path,
     snap_index: int,
-    plot_entrap_surface: bool = True,
+    plot_entrap_surface: bool = False,
 ) -> None:
     """
     Paper-facing 2D morphology figure for the selected snapshot:
@@ -2027,6 +2027,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--analysis-dir", type=str, default=None, help="Plot output directory. Default: <output_dir>/analysis_plots")
     parser.add_argument("--snap", type=str, default="latest", help="Snapshot: latest, first, middle, or integer index.")
     parser.add_argument("--max-time-radius-snaps", type=int, default=200, help="Maximum snapshots used for time-radius plots.")
+    parser.add_argument("--plot_entrap_surfaces", type=int, default=0, help="Plot entrapped snow surfaces.")
     return parser.parse_args()
 
 
@@ -2050,7 +2051,7 @@ def main() -> None:
 
     ### additional diagnostics / appendix ####
     make_diagnostics_plots(diag, analysis_dir)
-    make_final_1d_plots(selected_df, analysis_dir, selected.index)
+    make_final_1d_plots(selected_df, analysis_dir, selected.index, plot_entrap_surface=bool(args.plot_entrap_surfaces))
 
     if len(snapshots) > args.max_time_radius_snaps:
         indices = np.linspace(0, len(snapshots) - 1, args.max_time_radius_snaps).astype(int)
@@ -2066,11 +2067,11 @@ def main() -> None:
 
         ### for paper ####
         print("Plotting morphology...")
-        make_paper_2d_morphology(data2d, analysis_dir, nearest.index)
+        make_paper_2d_morphology(data2d, analysis_dir, nearest.index, plot_entrap_surface=bool(args.plot_entrap_surfaces))
 
         ### additional diagnostics / appendix ####
         print("Plotting 2D plots...")
-        make_2d_plots(data2d, analysis_dir, nearest.index)
+        make_2d_plots(data2d, analysis_dir, nearest.index, plot_entrap_surface=bool(args.plot_entrap_surfaces))
 
     write_summary_metrics(selected_df, diag, analysis_dir / "summary_metrics.csv", selected.index)
     print(f"Analysis complete. Plots written to: {analysis_dir}")
