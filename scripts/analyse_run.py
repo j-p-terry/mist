@@ -50,7 +50,7 @@ from colorspacious import cspace_converter
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.colors as mcolors
 from matplotlib import rc as mplrc
-from matplotlib.colors import ListedColormap, LinearSegmentedColormap, LogNorm, SymLogNorm
+from matplotlib.colors import ListedColormap, LinearSegmentedColormap, LogNorm, SymLogNorm, Normalize
 
 
 G = 6.67430e-8
@@ -911,6 +911,7 @@ def pcolormesh_time_radius_computed(
     label,
     log_value=False,
     cmap="magma",
+    vmin=None, vmax=None,
 ):
     frames = []
     times = []
@@ -935,14 +936,18 @@ def pcolormesh_time_radius_computed(
     if log_value:
         positive = values[np.isfinite(values) & (values > 0)]
         floor = positive.min() * 1e-3 if positive.size else 1e-300
-        plot_values = np.log10(np.maximum(values, floor))
-        cb_label = r"$\log_{10}$ " + label
+        # plot_values = np.log10(np.maximum(values, floor))
+        # cb_label = r"$\log_{10}$ " + label
+        plot_values = np.maximum(values, floor)
+        cb_label = label
+        norm = LogNorm(vmin=vmin, vmax=vmax)
     else:
         plot_values = values
         cb_label = label
+        norm = Normalize(vmin=vmin, vmax=vmax)
 
     plt.figure(figsize=(9, 5))
-    mesh = plt.pcolormesh(r, t, plot_values, shading="auto", cmap=cmap)
+    mesh = plt.pcolormesh(r, t, plot_values, shading="auto", cmap=cmap, norm=norm, rasterized=True)
     plt.xscale("log")
     plt.xlabel("Radius [au]")
     plt.ylabel("Time [yr]")
@@ -962,6 +967,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "Hidden CO fraction",
             "hidden CO fraction",
             False,
+            None, None,
         ),
         (
             "co_gas_fraction_budget",
@@ -969,6 +975,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "Gas-phase CO fraction",
             "gas CO fraction",
             False,
+            None, None,
         ),
         (
             "co_pebble_fraction_budget",
@@ -976,6 +983,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "Pebble-carried CO fraction",
             "pebble CO fraction",
             False,
+            None, None,
         ),
         (
             "co_small_fraction_budget",
@@ -983,6 +991,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "Small-grain-carried CO fraction",
             "small-grain CO fraction",
             False,
+            None, None,
         ),
         (
             "pebble_volatile_ice_budget",
@@ -990,6 +999,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "Pebble volatile ice surface density",
             r"pebble volatile ice [g cm$^{-2}$]",
             True,
+            None, None,
         ),
         (
             "small_volatile_ice_budget",
@@ -997,6 +1007,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "Small-grain volatile ice surface density",
             r"small-grain volatile ice [g cm$^{-2}$]",
             True,
+            None, None,
         ),
         (
             "pebble_fraction_of_solid_volatile_ice",
@@ -1004,6 +1015,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "Pebble fraction of solid volatile ice",
             "pebble fraction",
             False,
+            None, None,
         ),
         (
             "small_fraction_of_solid_volatile_ice",
@@ -1011,20 +1023,23 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "Small-grain fraction of solid volatile ice",
             "small-grain fraction",
             False,
+            None, None,
         ),
         (
             "C_over_O_pebble_masked",
             "time_radius_pebble_c_o_masked.png",
             "Pebble volatile C/O",
             "pebble C/O",
-            False,
+            True,
+            1e-3, 1e1,
         ),
         (
             "C_over_O_small_masked",
             "time_radius_small_c_o_masked.png",
             "Small-grain volatile C/O",
             "small-grain C/O",
-            False,
+            True,
+            1e-3, 1e1,
         ),
         (
             "co_gas_budget",
@@ -1032,6 +1047,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "CO gas surface density",
             r"CO gas [g cm$^{-2}$]",
             True,
+            None, None,
         ),
         (
             "co_hidden_total_budget",
@@ -1039,10 +1055,11 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "Hidden CO surface density",
             r"hidden CO [g cm$^{-2}$]",
             True,
+            None, None,
         ),
     ]
 
-    for col, fname, title, label, logval in targets:
+    for col, fname, title, label, logval, vmin, vmax in targets:
         pcolormesh_time_radius_computed(
             snapshots,
             col,
@@ -1050,6 +1067,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             title,
             label,
             logval,
+            vmin=vmin, vmax=vmax,
         )
 
     # ------------------------------------------------------------
@@ -1255,6 +1273,7 @@ def _prepare_pcolor_values(
     values: np.ndarray,
     log_value: bool,
     vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
 ) -> Tuple[np.ma.MaskedArray, str]:
     """
     Prepare values for pcolormesh. For log plots, non-positive finite values are
@@ -1268,7 +1287,8 @@ def _prepare_pcolor_values(
 
     positive = values[np.isfinite(values) & (values > 0.0)]
     if vmin is not None:
-        floor = 10.0 ** float(vmin)
+        # floor = 10.0 ** float(vmin)
+        floor = float(vmin)
     elif positive.size:
         floor = max(float(np.nanmin(positive)) * 1.0e-3, 1.0e-300)
     else:
@@ -1276,8 +1296,10 @@ def _prepare_pcolor_values(
 
     plot_values = np.full_like(values, np.nan, dtype=float)
     finite = np.isfinite(values)
-    plot_values[finite] = np.log10(np.maximum(values[finite], floor))
-    return np.ma.masked_invalid(plot_values), r"$\log_{10}$"
+    # plot_values[finite] = np.log10(np.maximum(values[finite], floor))
+    plot_values[finite] = np.maximum(values[finite], floor)
+    # return np.ma.masked_invalid(plot_values), r"$\log_{10}$"
+    return np.ma.masked_invalid(plot_values), r""
 
 
 def _copy_cmap_with_bad(cmap):
@@ -1308,18 +1330,20 @@ def pcolor_r_z_on_axis(
 ):
     """Plot a 2D r--z/r field on an existing axis using explicit cell edges."""
     R_edges, Z_edges = _rz_cell_edges(r, z_over_r)
-    plot_values, log_prefix = _prepare_pcolor_values(values, log_value=log_value, vmin=vmin)
+    plot_values, log_prefix = _prepare_pcolor_values(values, log_value=log_value, vmin=vmin, vmax=vmax)
     cmap_obj = _copy_cmap_with_bad(cmap)
+    norm = LogNorm(vmin=vmin, vmax=vmax) if log_value else Normalize(vmin=vmin, vmax=vmax)
 
     mesh = ax.pcolormesh(
         R_edges,
         Z_edges,
         plot_values,
         shading="flat",
-        vmin=vmin,
-        vmax=vmax,
+        # vmin=vmin,
+        # vmax=vmax,
         cmap=cmap_obj,
         rasterized=True,
+        norm=norm,
     )
     ax.set_xscale("log")
     ax.set_xlabel("Radius [au]")
@@ -1444,7 +1468,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
                 Path(f"{analysis_dir}/selected_2d_{key}.png"),
                 log_value=True,
                 overlay=None,
-                vmin=-12, vmax=-2,
+                vmin=1e-12, vmax=1e-2,
             )
                
     hidden_co = (
@@ -1493,8 +1517,8 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         Path(f"{analysis_dir}/selected_2d_co_gas_frac.png"),
         log_value=True,
         overlay=None,
-        vmin=-6,
-        vmax=0,
+        vmin=1e-6,
+        vmax=1e0,
     )
     print("Plotting hidden CO fraction")
     pcolor_r_z(
@@ -1504,7 +1528,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
         log_value=True,
         overlay=None,
-        vmin=-6, vmax=0,
+        vmin=1e-6, vmax=1e0,
     )
     # pcolor_r_z(
     #     r,
@@ -1917,8 +1941,8 @@ def make_paper_2d_morphology(
             hidden_frac,
             r"$\Sigma_{\rm CO,hidden}/\Sigma_{\rm CO}$",
             True,
-            -6,
-            0,
+            1e-6,
+            1e0,
             "viridis",
             None,
             "(b) Hidden CO fraction",
@@ -1928,8 +1952,8 @@ def make_paper_2d_morphology(
             co_at_co2,
             r"$\Sigma_{\rm CO@CO_2}$ [g cm$^{-2}$]",
             True,
-            -12,
-            -2,
+            1e-12,
+            1e-2,
             "magma",
             None,
             r"(c) CO@CO$_2$ ice",
@@ -1939,8 +1963,8 @@ def make_paper_2d_morphology(
             co_at_h2o,
             r"$\Sigma_{\rm CO@H_2O}$ [g cm$^{-2}$]",
             True,
-            -12,
-            -2,
+            1e-12,
+            1e-2,
             "magma",
             None,
             r"(d) CO@H$_2$O ice",
