@@ -725,7 +725,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
             i += 1
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Surface density [g cm$^{-2}$]")
-    plt.title(f"Volatile reservoir profiles, snapshot {snap_index}")
+    plt.title(f"Volatile reservoir profiles")#, snapshot {snap_index}")
     plt.ylim(bottom=1e-8)
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
@@ -746,7 +746,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Surface density [g cm$^{-2}$]")
     plt.ylim(bottom=1e-8)
-    plt.title(f"Carrier-resolved solid volatiles, snapshot {snap_index}")
+    plt.title(f"Carrier-resolved solid volatiles")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/final_carrier_profiles.png")
@@ -768,7 +768,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
             i += 1
     plt.xlabel("Radius [au]")
     plt.ylabel("Ratio / fraction")
-    plt.title(f"C/O and CO partitioning, snapshot {snap_index}")
+    plt.title(f"C/O and CO partitioning")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/final_c_o_profiles.png")
@@ -791,7 +791,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
             plt.semilogx(r, df["H_over_r"], label="H/r", color="gray", ls='--')
         plt.xlabel("Radius [au]")
         plt.ylabel("z/r")
-        plt.title(f"Modeled release surfaces, snapshot {snap_index}")
+        plt.title(f"Modeled release surfaces")#, snapshot {snap_index}")
         plt.legend(ncols=2, fontsize=8)
         plt.grid(True, which="both", alpha=0.3)
         savefig(f"{analysis_dir}/final_snow_surfaces.png")
@@ -808,7 +808,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
             i += 1
         plt.xlabel("Radius [au]")
         plt.ylabel(r"$dM_{\rm ice,release}$  [M$_{\oplus}$]")
-        plt.title(f"Ice mass release, snapshot {snap_index}")
+        plt.title(f"Ice mass release")#, snapshot {snap_index}")
         plt.legend(ncols=2, fontsize=8)
         plt.grid(True, which="both", alpha=0.3)
         savefig(f"{analysis_dir}/ice_release.png")
@@ -826,7 +826,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Surface density [g cm$^{-2}$]")
     plt.ylim(bottom=1e-8)
-    plt.title(f"CO ices, snapshot {snap_index}")
+    plt.title(f"CO ices")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/co_sigmas.png")
@@ -839,7 +839,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.semilogx(r, co2_at_h2o / h2o_tot, label="CO2@H2O Ice", color=color_list[2])
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Trapping capacity")
-    plt.title(f"CO@X/X total, snapshot {snap_index}")
+    plt.title(f"CO@X/X total")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/co_trapping_capacity.png")
@@ -881,7 +881,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.axhline(1.0, color="k", lw=1, ls="--")
     plt.xlabel("Radius [au]")
     plt.ylabel("Guest / host mass ratio")
-    plt.title(f"CO trapping capacity, snapshot {snap_index}")
+    plt.title(f"CO trapping capacity")#"snap_index}")
     plt.legend()
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/co_trapping_capacity_mass_ratio.png")
@@ -894,7 +894,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.axhline(1.0, color="k", lw=1, ls="--")
     plt.xlabel("Radius [au]")
     plt.ylabel("Guest / host mass ratio")
-    plt.title(f"CO trapping capacity, snapshot {snap_index}")
+    plt.title(f"CO trapping capacity")#, snapshot {snap_index}")
     plt.legend()
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/co_trapping_capacity_mol_ratio.png")
@@ -1120,6 +1120,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ("dM_CO_at_H2O", "CO@H2O"),
         ("dM_CO2_pure", "CO2 pure"),
         ("dM_CO2_at_H2O", "CO2@H2O"),
+        # ("dM_H2O_pure", "H2O pure"), # maybe add pure
     ]
 
     plt.figure(figsize=(9, 5))
@@ -1415,7 +1416,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     print("Plotting snow surfaces")
     pcolor_r_z(
         r, z_over_r, data["T_K"],
-        f"Vertical temperature and release surfaces, snapshot {snap_index}",
+        f"Vertical temperature and release surfaces",# snapshot {snap_index}",
         "T [K]",
         f"{analysis_dir}/selected_2d_temperature_snow_surfaces.png",
         log_value=False,
@@ -1435,7 +1436,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
             print(f"Plotting {key}")
             pcolor_r_z(
                 r, z_over_r, data[key],
-                f"{title}, snapshot {snap_index}",
+                f"{title}",# snapshot {snap_index}",
                 "survival probability",
                 analysis_dir / f"selected_2d_{key}.png",
                 log_value=False,
@@ -1445,25 +1446,25 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     reservoir_maps = [
         ("surfbin_CO_gas", "CO gas"),
         ("surfbin_CO_pure_ice_pebble", "CO pure ice, pebbles"),
-        ("surfbin_CO_at_CO2_ice_pebble", "CO@CO2 ice, pebbles"),
-        ("surfbin_CO_at_H2O_ice_pebble", "CO@H2O ice, pebbles"),
+        ("surfbin_CO_at_CO2_ice_pebble", r"CO@CO$_2$ ice, pebbles"),
+        ("surfbin_CO_at_H2O_ice_pebble", r"CO@H$_2$O ice, pebbles"),
         ("surfbin_CO_pure_ice_small", "CO pure ice, small grains"),
-        ("surfbin_CO_at_CO2_ice_small", "CO@CO2 ice, small grains"),
-        ("surfbin_CO_at_H2O_ice_small", "CO@H2O ice, small grains"),
-        ("surfbin_CO2_gas", "CO2 gas"),
-        ("surfbin_CO2_pure_ice_pebble", "CO2 pure ice, pebbles"),
-        ("surfbin_CO2_at_H2O_ice_pebble", "CO2@H2O ice, pebbles"),
-        ("surfbin_CO2_pure_ice_small", "CO2 pure ice, small grains"),
-        ("surfbin_CO2_at_H2O_ice_small", "CO2@H2O ice, small grains"),
-        ("surfbin_H2O_gas", "H2O gas"),
-        ("surfbin_H2O_ice_pebble", "H2O ice, pebbles"),
-        ("surfbin_H2O_ice_small", "H2O ice, small grains"),
+        ("surfbin_CO_at_CO2_ice_small", r"CO@CO$_{2}$ ice, small grains"),
+        ("surfbin_CO_at_H2O_ice_small", r"CO@H$_{2}$O ice, small grains"),
+        ("surfbin_CO2_gas", r"CO$_{2}$ gas"),
+        ("surfbin_CO2_pure_ice_pebble", r"CO$_{2}$ pure ice, pebbles"),
+        ("surfbin_CO2_at_H2O_ice_pebble", r"CO$_{2}$@H$_{2}$O ice, pebbles"),
+        ("surfbin_CO2_pure_ice_small", r"CO$_{2}$ pure ice, small grains"),
+        ("surfbin_CO2_at_H2O_ice_small", r"CO$_{2}$@H$_{2}$O ice, small grains"),
+        ("surfbin_H2O_gas", r"H$_{2}$O gas"),
+        ("surfbin_H2O_ice_pebble", r"H$_{2}$O ice, pebbles"),
+        ("surfbin_H2O_ice_small", r"H$_{2}$O ice, small grains"),
     ]
     for key, title in reservoir_maps:
         if key in data:
             pcolor_r_z(
                 r, z_over_r, data[key],
-                f"{title}, snapshot {snap_index}",
+                f"{title}",# snapshot {snap_index}",
                 r"vertical-bin surface density [g cm$^{-2}$]",
                 Path(f"{analysis_dir}/selected_2d_{key}.png"),
                 log_value=True,
@@ -1512,7 +1513,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     print("Plotting CO gas fraction")
     pcolor_r_z(
         r, z_over_r, gas_frac,
-        f"CO gas fraction, snapshot {snap_index}",
+        f"CO gas fraction",# snapshot {snap_index}",
         r"$\Sigma_{\rm CO,gas}/\Sigma_{\rm CO}$",
         Path(f"{analysis_dir}/selected_2d_co_gas_frac.png"),
         log_value=True,
@@ -1523,7 +1524,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     print("Plotting hidden CO fraction")
     pcolor_r_z(
         r, z_over_r, hidden_frac,
-        f"Hidden CO fraction, snapshot {snap_index}",
+        f"Hidden CO fraction",# snapshot {snap_index}",
         r"$\Sigma_{\rm CO,hidden}/\Sigma_{\rm CO}$",
         Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
         log_value=True,
@@ -1728,6 +1729,7 @@ VOL_CHANNEL_LABELS = {
     "CO_at_H2O": r"CO@H$_2$O",
     "CO2_pure": r"pure CO$_2$",
     "CO2_at_H2O": r"CO$_{2}$@H$_2$O",
+    "H2O_pure": r"pure H$_2$O",
 }
 
 VOL_CHANNEL_COLORS = {
@@ -1736,6 +1738,7 @@ VOL_CHANNEL_COLORS = {
     "CO_at_H2O": color_list[2],
     "CO2_pure": color_list[3],
     "CO2_at_H2O": color_list[4],
+    "H2O_pure": color_list[5],
 }
 
 
@@ -1817,6 +1820,7 @@ def make_paper_cumulative_release_profile(
         ("dM_CO_at_H2O", "CO_at_H2O"),
         ("dM_CO2_pure", "CO2_pure"),
         ("dM_CO2_at_H2O", "CO2_at_H2O"),
+        # ("dM_H2O_pure", "H2O_pure"), # maybe add pure
     ]
 
     cumulative_by_channel: Dict[str, np.ndarray] = {}
@@ -1837,7 +1841,7 @@ def make_paper_cumulative_release_profile(
         return
 
     fig, ax = plt.subplots(figsize=(8.6, 4.8))
-    for channel in ["CO_pure", "CO_at_CO2", "CO_at_H2O", "CO2_pure", "CO2_at_H2O"]:
+    for channel in ["CO_pure", "CO_at_CO2", "CO_at_H2O", "CO2_pure", "CO2_at_H2O"]:#, "H2O_pure"]: # maybe add pure
         if channel not in cumulative_by_channel:
             continue
         profile = cumulative_by_channel[channel] / np.maximum(dlnr, EPS) / MEARTH

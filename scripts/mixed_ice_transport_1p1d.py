@@ -1418,6 +1418,10 @@ def compute_release(state_before, state_after, dt, grid):
             "CO2_at_H2O_ice_pebble",
             "CO2_at_H2O_ice_small",
         ],
+        "H2O_pure": [
+            "H2O_ice_pebble",
+            "H2O_ice_small",
+        ],
     }
 
     out = {}
@@ -1455,6 +1459,14 @@ def compute_release(state_before, state_after, dt, grid):
     out["dM_CO2_gas"] = dM_CO2_gas
     out["Mdot_CO2_gas"] = Mdot_CO2_gas
     out["Mdot_dlnr_CO2_gas"] = Mdot_CO2_gas / dlnr
+    
+    dSigma_H2O_gas_net = state_after["H2O_gas"] - state_before["H2O_gas"]
+    dM_H2O_gas = area * dSigma_H2O_gas_net
+    Mdot_H2O_gas = dM_H2O_gas / dt
+    out["dSigma_H2O_gas"] = dSigma_H2O_gas_net
+    out["dM_H2O_gas"] = dM_H2O_gas
+    out["Mdot_H2O_gas"] = Mdot_H2O_gas
+    out["Mdot_dlnr_H2O_gas"] = Mdot_H2O_gas / dlnr
 
     return out
 
@@ -2400,12 +2412,17 @@ def run(params: Dict[str, Any]) -> None:
                "dM_CO2_at_H2O": None,
                "dSigma_CO_gas": None,
                "dSigma_CO2_gas": None,
+               "dSigma_H2O_gas": None,
+               "dM_H2O_pure": None,
                "dM_CO_gas": None,
                "Mdot_CO_gas": None,
                "Mdot_dlnr_CO_gas": None,
                "dM_CO2_gas": None,
                "Mdot_CO2_gas": None,
                "Mdot_dlnr_CO2_gas": None,
+               "dM_H2O_gas": None,
+               "Mdot_H2O_gas": None,
+               "Mdot_dlnr_H2O_gas": None,
                }
 
     br_diag = {}
