@@ -116,7 +116,7 @@ def get_color_list(color_list: list, i: int):
 
     return color_list
 
-c0 = [0.52156863, 0.58823529, 0.84313725]
+c0 = [0.2745098 , 0.4       , 0.55294118]
 c1 = [0.96078431, 0.93333333, 0.37254902]
 c2 = [0.75686275, 0.21176471, 0.11372549]
 N_samples = 256
@@ -129,6 +129,7 @@ color_list = [[0.75686275, 0.21176471, 0.11372549],
               [0.15294118, 0.19607843, 0.23529412],
               [0.50196078, 0.52941176, 0.50196078],
               [0.74509804, 0.52156863, 0.56862745],
+              [0.98431373, 0.62745098, 0.40784314],
              ]
 
 # -------------------------
@@ -706,7 +707,7 @@ def add_volatile_budget_columns_1d(df):
 # 1D snapshot plots
 # -----------------------------
 def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
-                        plot_entrap_surface: bool = True) -> None:
+                        plot_entrap_surface: bool = True, plot_gas: bool = False) -> None:
     if "r_au" not in df.columns:
         return
     r = df["r_au"]
@@ -715,9 +716,9 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     i = 0
     this_color_list = color_list[:]
     for col, label in [
-        ("CO_gas", "CO gas"), ("CO_solid_total", "CO solid"), ("CO_hidden_total", "hidden CO"),
-        ("CO2_gas", "CO2 gas"), ("CO2_solid_total", "CO2 solid"),
-        ("H2O_gas", "H2O gas"), ("H2O_solid_total", "H2O solid"),
+        ("CO_gas", "CO gas"), ("CO_solid_total", "CO solid"), ("CO_hidden_total", "Hidden CO"),
+        ("CO2_gas", r"CO$_{2}$ gas"), ("CO2_solid_total", r"CO$_{2}$ solid"),
+        ("H2O_gas", r"H$_{2}$O gas"), ("H2O_solid_total", r"H$_{2}$O solid"),
     ]:
         if col in df.columns:
             this_color_list = get_color_list(this_color_list, i)
@@ -732,21 +733,33 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     savefig(analysis_dir / "final_volatile_profiles.png")
 
     plt.figure(figsize=(9, 5))
-    i = 0
     this_color_list = color_list[:]
-    for col, label in [
-        ("CO_solid_pebble", "CO in pebbles"), ("CO_solid_small", "CO in small grains"),
-        ("CO2_solid_pebble", "CO2 in pebbles"), ("CO2_solid_small", "CO2 in small grains"),
-        ("H2O_solid_pebble", "H2O in pebbles"), ("H2O_solid_small", "H2O in small grains"),
+    # for col, label, i, ls in [
+    #     ("CO_solid_pebble", "CO in pebbles", 0, '-'), ("CO_solid_small", "CO in small grains", 0, '--'),
+    #     ("CO2_solid_pebble", r"CO$_{2}$ in pebbles", 1, '-'), ("CO2_solid_small", r"CO$_{2}$ in small grains", 1, '--'),
+    #     ("H2O_solid_pebble", r"H$_{2}$O in pebbles", 2, '-'), ("H2O_solid_small", r"H$_{2}$O in small grains", 2, '--'),
+    #     ("ref_solid_pebble", r"Refractory pebbles", 3, '-'), ("ref_solid_small", r"Refractory small grains", 3, '--'),
+    # ]:
+    for col, label, i, ls in [
+        ("CO_solid_pebble", "CO", 0, '-'), ("CO_solid_small", None, 0, '--'),
+        ("CO2_solid_pebble", r"CO$_{2}$", 1, '-'), ("CO2_solid_small", None, 1, '--'),
+        ("H2O_solid_pebble", r"H$_{2}$O", 2, '-'), ("H2O_solid_small", None, 2, '--'),
+        ("ref_solid_pebble", r"Refractory", 3, '-'), ("ref_solid_small", None, 3, '--'),
+        ("CO_gas", None, 0, ':'), ("CO2_gas", None, 1, ':'), ("H2O_gas", None, 2, ':'),
     ]:
+        if not plot_gas and "_gas" in col:
+            continue
         if col in df.columns:
             this_color_list = get_color_list(this_color_list, i)
-            plt.loglog(r, np.maximum(df[col], EPS), label=label, color=this_color_list[i])
-            i += 1
+            plt.loglog(r, np.maximum(df[col], EPS), label=label, color=this_color_list[i], ls=ls)
+    plt.plot([], [], c='k', lw=1, label='Pebbles')
+    plt.plot([], [], c='k', lw=1, ls='--', label='Small grains')
+    if plot_gas:
+        plt.plot([], [], c='k', lw=1, ls=':', label='Gas')
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Surface density [g cm$^{-2}$]")
     plt.ylim(bottom=1e-8)
-    plt.title(f"Carrier-resolved solid volatiles")#, snapshot {snap_index}")
+    plt.title(f"Carrier-resolved 1D surface density")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/final_carrier_profiles.png")
@@ -1351,10 +1364,18 @@ def pcolor_r_z_on_axis(
     ax.set_ylabel(r"$z/r$")
 
     if overlay:
+        ice_color_list = [
+                        #   "white",
+                        # [0.87058824, 0.84705882, 0.89411765],
+                        [0.87058824, 0.85882353, 0.85490196], # CO
+                        [0.79607843, 0.70588235, 0.95686275], # CO2
+                        [0.36078431, 0.63137255, 0.87058824], # H2O
+                        # [0.56470588, 0.33333333, 0.40784314], 
+                        ]
         for i, (name, surf) in enumerate(overlay.items()):
             if not plot_entrap_surface and "pure" in name:
                 name = name.split("pure ")[1]
-            ax.plot(r, surf, label=name, color=color_list[i], linewidth=1.4)
+            ax.plot(r, surf, label=name, color=ice_color_list[i], linewidth=1.4)
         ax.legend(fontsize=8, ncols=2, frameon=True)
 
     label = rf"{log_prefix}({cb_label})" if log_prefix else cb_label
@@ -1425,22 +1446,23 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     )
 
     for key, title in [
-        ("survival_CO_pure", "CO pure survival"),
-        ("survival_CO_at_CO2", "CO@CO2 survival"),
-        ("survival_CO_at_H2O", "CO@H2O survival"),
-        ("survival_CO2_pure", "CO2 pure survival"),
-        ("survival_CO2_at_H2O", "CO2@H2O survival"),
-        ("survival_H2O", "H2O survival"),
+        ("survival_CO_pure", r"CO pure survival"),
+        ("survival_CO_at_CO2", r"CO@CO$_{2}$ survival"),
+        ("survival_CO_at_H2O", r"CO@H$_{2}$O survival"),
+        ("survival_CO2_pure", r"CO$_{2}$ pure survival"),
+        ("survival_CO2_at_H2O", r"CO$_{2}$@H$_{2}$O survival"),
+        ("survival_H2O", r"H$_{2}$O survival"),
     ]:
         if key in data:
             print(f"Plotting {key}")
             pcolor_r_z(
                 r, z_over_r, data[key],
                 f"{title}",# snapshot {snap_index}",
-                "survival probability",
+                r"Survival probability",
                 analysis_dir / f"selected_2d_{key}.png",
-                log_value=False,
+                log_value=True,
                 overlay=None,
+                vmin=1e-4, vmax=1,
             )
 
     reservoir_maps = [
@@ -1789,9 +1811,9 @@ def make_paper_final_1d_summary(df: pd.DataFrame, analysis_dir: Path, snap_index
     ax.semilogx(r, df["C_over_O_small_masked"], label="small-grain C/O", color=color_list[1], linewidth=2.0)
     ax.semilogx(r, hidden_frac, label="hidden CO fraction", color=color_list[2], linewidth=2.0, linestyle="--")
     ax.set_xlabel("Radius [au]")
-    ax.set_ylabel("Ratio / fraction")
+    ax.set_ylabel("(C/O) or fraction")
     ax.set_ylim(-0.02, 1.02)
-    ax.set_title("(b) Carrier composition")
+    ax.set_title("(b) Carrier composition of volatile ice")
     ax.legend(frameon=True, fontsize=8)
     ax.grid(True, which="both", alpha=0.25)
 
@@ -1855,7 +1877,7 @@ def make_paper_cumulative_release_profile(
 
     ax.set_xlabel("Radius [au]")
     ax.set_ylabel(r"$dM_{\rm ice,rel}^{\rm cum}/d\ln r$ [$M_\oplus$]")
-    ax.set_title("Cumulative ice release by ice reservoir")
+    ax.set_title("Cumulative volatile release by reservoir")
     ax.legend(frameon=True)
     ax.grid(True, which="both", alpha=0.25)
     fig.tight_layout()
