@@ -16,7 +16,7 @@
 simulation:
   name: mixed_ice_1p1d_example
   output_dir: mixed_ice_1p1d_outputs_example
-  t_end_yr: 100000.0
+  t_end_yr: 250000.0
 
   # If save_interval_yr is null, save_interval_fraction is used.
   # 0.01 means snapshots every 1% of total simulation time.
