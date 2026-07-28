@@ -969,6 +969,248 @@ def pcolormesh_time_radius_computed(
     cb = plt.colorbar(mesh)
     cb.set_label(cb_label)
     savefig(outpath)
+    
+def make_paper_time_radius_co_partitioning(
+    snapshots,
+    analysis_dir,
+    fname="paper_time_radius_co_partitioning.png",
+    cmap="magma",
+    total_floor_fraction=1.0e-10,
+):
+    """
+    Make a three-panel time-radius figure showing the mutually exclusive
+    partition of local CO among:
+
+      (a) gas-phase CO
+      (b) pure CO ice
+      (c) matrix-associated CO = CO@CO2 + CO@H2O
+
+    At every well-populated radial cell,
+
+        f_gas + f_pure + f_matrix = 1.
+
+    Parameters
+    ----------
+    snapshots : sequence of SnapshotInfo
+        Snapshot list. Each element must have a `.path` attribute.
+
+    analysis_dir : str or pathlib.Path
+        Directory in which the figure will be saved.
+
+    fname : str
+        Output filename.
+
+    cmap : str or matplotlib colormap
+        Colormap used for all panels.
+
+    total_floor_fraction : float
+        Cells with total CO below this fraction of the maximum total CO in
+        that snapshot are masked. This avoids plotting meaningless fractions
+        where effectively no CO remains.
+    """
+
+    if snapshots is None or len(snapshots) == 0:
+        return
+
+    analysis_dir = Path(analysis_dir)
+
+    def linear_edges_from_centers(x):
+        """Construct cell edges from linearly spaced or irregular centers."""
+        x = np.asarray(x, dtype=float)
+
+        if x.ndim != 1 or x.size == 0:
+            raise ValueError("Centers must be a non-empty 1D array.")
+
+        if x.size == 1:
+            dx = 0.5 * max(abs(x[0]), 1.0)
+            return np.array([x[0] - dx, x[0] + dx])
+
+        edges = np.empty(x.size + 1, dtype=float)
+        edges[1:-1] = 0.5 * (x[:-1] + x[1:])
+        edges[0] = x[0] - 0.5 * (x[1] - x[0])
+        edges[-1] = x[-1] + 0.5 * (x[-1] - x[-2])
+
+        return edges
+
+    def log_edges_from_centers(x):
+        """Construct logarithmic cell edges from positive radial centers."""
+        x = np.asarray(x, dtype=float)
+
+        if np.any(x <= 0.0):
+            raise ValueError("Radial centers must be positive.")
+
+        return np.exp(linear_edges_from_centers(np.log(x)))
+
+
+    times = []
+    gas_rows = []
+    pure_rows = []
+    matrix_rows = []
+
+    r_ref = None
+
+    for snap in snapshots:
+        df = read_snapshot(snap.path)
+
+        if "r_au" not in df.columns:
+            continue
+
+        r_now = df["r_au"].to_numpy(dtype=float)
+
+        if r_ref is None:
+            r_ref = r_now
+        elif (
+            len(r_now) != len(r_ref)
+            or not np.allclose(r_now, r_ref, rtol=1.0e-10, atol=0.0)
+        ):
+            raise ValueError(
+                "The snapshot radial grids do not match; "
+                "a time-radius map cannot be constructed."
+            )
+
+        if "time_yr" in df.columns:
+            time_yr = float(df["time_yr"].iloc[0])
+        elif hasattr(snap, "time_yr"):
+            time_yr = float(snap.time_yr)
+        else:
+            time_yr = float(len(times))
+
+        # Mutually exclusive CO reservoirs.
+        co_gas = _col(df, "CO_gas")
+
+        co_pure = (
+            _col(df, "CO_pure_ice_pebble")
+            + _col(df, "CO_pure_ice_small")
+        )
+
+        co_at_co2 = (
+            _col(df, "CO_at_CO2_ice_pebble")
+            + _col(df, "CO_at_CO2_ice_small")
+        )
+
+        co_at_h2o = (
+            _col(df, "CO_at_H2O_ice_pebble")
+            + _col(df, "CO_at_H2O_ice_small")
+        )
+
+        co_matrix = co_at_co2 + co_at_h2o
+        co_total = co_gas + co_pure + co_matrix
+
+        co_floor = (
+            total_floor_fraction
+            * max(float(np.nanmax(co_total)), EPS)
+        )
+        good = co_total > co_floor
+
+        gas_fraction = np.full_like(co_total, np.nan, dtype=float)
+        pure_fraction = np.full_like(co_total, np.nan, dtype=float)
+        matrix_fraction = np.full_like(co_total, np.nan, dtype=float)
+
+        np.divide(
+            co_gas,
+            co_total,
+            out=gas_fraction,
+            where=good,
+        )
+        np.divide(
+            co_pure,
+            co_total,
+            out=pure_fraction,
+            where=good,
+        )
+        np.divide(
+            co_matrix,
+            co_total,
+            out=matrix_fraction,
+            where=good,
+        )
+
+        gas_fraction = np.clip(gas_fraction, 0.0, 1.0)
+        pure_fraction = np.clip(pure_fraction, 0.0, 1.0)
+        matrix_fraction = np.clip(matrix_fraction, 0.0, 1.0)
+
+        times.append(time_yr)
+        gas_rows.append(gas_fraction)
+        pure_rows.append(pure_fraction)
+        matrix_rows.append(matrix_fraction)
+
+    if r_ref is None or len(times) < 2:
+        return
+
+    times = np.asarray(times, dtype=float)
+    gas_map = np.asarray(gas_rows, dtype=float)
+    pure_map = np.asarray(pure_rows, dtype=float)
+    matrix_map = np.asarray(matrix_rows, dtype=float)
+
+    # Ensure chronological ordering.
+    order = np.argsort(times)
+    times = times[order]
+    gas_map = gas_map[order]
+    pure_map = pure_map[order]
+    matrix_map = matrix_map[order]
+
+    r_edges = log_edges_from_centers(r_ref)
+    time_edges = linear_edges_from_centers(times)
+
+    # Avoid extending the first plotting cell to negative time.
+    time_edges[0] = max(0.0, time_edges[0])
+
+    R_edges, T_edges = np.meshgrid(r_edges, time_edges)
+
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=(15.5, 4.8),
+        sharex=True,
+        sharey=True,
+        constrained_layout=True,
+    )
+
+    mesh = None
+
+    for ax, (values, title) in zip(
+        axes,
+        [
+            (gas_map, "(a) Gas phase"),
+            (pure_map, "(b) Pure CO ice"),
+            (matrix_map, "(c) Matrix-associated CO"),
+        ],
+    ):
+        mesh = ax.pcolormesh(
+            R_edges,
+            T_edges,
+            values,
+            shading="flat",
+            cmap=cmap,
+            vmin=0.0,
+            vmax=1.0,
+            rasterized=True,
+        )
+
+        ax.set_xscale("log")
+        ax.set_xlabel("Radius [au]")
+        ax.set_title(title)
+        ax.grid(False)
+
+    axes[0].set_ylabel("Time [yr]")
+
+    cbar = fig.colorbar(
+        mesh,
+        ax=axes,
+        location="right",
+        pad=0.015,
+        fraction=0.025,
+    )
+    cbar.set_label("Fraction of local CO")
+
+    fig.suptitle("Time evolution of radial CO partitioning", y=1.03)
+
+    fig.savefig(
+        analysis_dir / fname,
+        dpi=240,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
 
 def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path) -> None:
     # ------------------------------------------------------------
@@ -2161,7 +2403,8 @@ def main() -> None:
         ### for paper ####
         print("Plotting morphology...")
         make_paper_2d_morphology(data2d, analysis_dir, nearest.index, plot_entrap_surface=bool(args.plot_entrap_surfaces))
-
+        make_paper_time_radius_co_partitioning(snapshots, analysis_dir)
+        
         ### additional diagnostics / appendix ####
         print("Plotting 2D plots...")
         make_2d_plots(data2d, analysis_dir, nearest.index, plot_entrap_surface=bool(args.plot_entrap_surfaces))
