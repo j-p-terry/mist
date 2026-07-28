@@ -1157,7 +1157,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
 
     plt.xlabel("Radius [au]")
     plt.ylabel(r"$dM_{\rm ice,release}^{\rm cum}/d\ln r$ [M$_\oplus$]")
-    plt.title("Cumulative ice release by reservoir")
+    plt.title("Cumulative gross volatile-ice reservoir loss")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(analysis_dir / "total_ice_release_dM_dlnr.png")
@@ -1180,11 +1180,11 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         i += 1
 
     plt.xlabel("Radius [au]")
-    plt.ylabel(r"$dM_{\rm CO,release}^{\rm cum}$ [M$_\oplus$]")
-    plt.title("Cumulative CO release by reservoir")
+    plt.ylabel(r"$dM_{\rm ice,release}^{\rm cum}$ per radial bin [M$_\oplus$]")
+    plt.title("Cumulative gross volatile-ice reservoir loss")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(analysis_dir / "total_co_release_dM.png")
+    savefig(analysis_dir / "cumulative_volatile_ice_reservoir_loss.png")
 
     # ------------------------------------------------------------
     # Cumulative net gas-phase CO change
