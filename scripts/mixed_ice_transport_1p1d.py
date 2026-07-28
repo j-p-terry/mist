@@ -36,6 +36,14 @@ Outputs
     <output_dir>/snapshots_2d/snapshot2d_XXXXXX.npz        [optional]
     <output_dir>/diagnostics.csv
     <output_dir>/resolved_params.yaml
+
+Release diagnostics
+-------------------
+Each saved 1D snapshot contains release integrated over the interval since the
+previous saved snapshot (``dM_*``/``dSigma_*``), plus output-cadence-independent
+running integrals (``cum_dM_*``/``cum_dSigma_*``). Reservoir-channel release is
+a gross positive loss from that ice reservoir during the phase update; net gas
+phase source terms are stored separately.
 """
 
 from __future__ import annotations
@@ -44,6 +52,7 @@ import argparse
 import csv
 import math
 import os
+import shutil
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -88,6 +97,23 @@ SURVIVAL_KEYS = (
     "CO2_at_H2O",
     "H2O",
 )
+
+# Reservoir fields used by the release bookkeeping.  These diagnostics measure
+# gross positive loss from each reservoir during the phase-update substep.
+ICE_RELEASE_CHANNEL_FIELDS = {
+    "CO_pure": ("CO_pure_ice_pebble", "CO_pure_ice_small"),
+    "CO_at_CO2": ("CO_at_CO2_ice_pebble", "CO_at_CO2_ice_small"),
+    "CO_at_H2O": ("CO_at_H2O_ice_pebble", "CO_at_H2O_ice_small"),
+    "CO2_pure": ("CO2_pure_ice_pebble", "CO2_pure_ice_small"),
+    "CO2_at_H2O": ("CO2_at_H2O_ice_pebble", "CO2_at_H2O_ice_small"),
+    "H2O_pure": ("H2O_ice_pebble", "H2O_ice_small"),
+}
+
+PHASE_GAS_FIELDS = {
+    "CO": "CO_gas",
+    "CO2": "CO2_gas",
+    "H2O": "H2O_gas",
+}
 
 
 def ref_field(carrier: str) -> str:
@@ -192,6 +218,10 @@ DEFAULTS: Dict[str, Any] = {
         "schmidt_gas": 1.0,
         "velocity_mode": "viscous",  # viscous, zero, constant
         "constant_v_g_cm_s": 0.0,
+        # If true, advect Sigma_g with the prescribed radial gas velocity.
+        # This is not the full viscous diffusion equation.
+        "update_gas": True,
+        "Sigma_floor": 1.0e-30,
     },
     "dust": {
         "carriers": {
@@ -221,6 +251,18 @@ DEFAULTS: Dict[str, Any] = {
         "volatile_carrier_fractions": {
             "pebble": 0.90,
             "small": 0.10,
+        },
+        # Preserves pebble/small-grain carrier history.  Matrix identity is still
+        # re-equilibrated according to the prescribed reservoir fractions.
+        "phase_partition": {
+            "preserve_carrier_history": True,
+        },
+        "backreaction": {
+            "enabled": False,
+            "epsilon_mode": "midplane",
+            "include_small": False,
+            "epsilon_cap": 10.0,
+            "sigma_floor": 1.0e-300,
         },
     },
     "vertical": {
@@ -261,7 +303,7 @@ DEFAULTS: Dict[str, Any] = {
             "release_temperatures_K": {
                 "pure": 25.0,
                 "at_CO2": 70.0,
-                "at_H2O": 130.0,
+                "at_H2O": 150.0,
             },
             "transition_widths_K": {
                 "pure": 3.0,
@@ -277,7 +319,7 @@ DEFAULTS: Dict[str, Any] = {
             },
             "release_temperatures_K": {
                 "pure": 70.0,
-                "at_H2O": 130.0,
+                "at_H2O": 150.0,
             },
             "transition_widths_K": {
                 "pure": 6.0,
@@ -288,6 +330,22 @@ DEFAULTS: Dict[str, Any] = {
             "total_mass_fraction": 5.0e-3,
             "release_temperature_K": 150.0,
             "transition_width_K": 10.0,
+        },
+        "trapping_capacity": {
+            "enabled": True,
+            "excess_destination": "gas",
+            "host_floor": 1.0e-300,
+            "availability_relative_floor": 1.0e-12,
+            "availability_abs_floor": 1.0e-300,
+            "CO_at_CO2": {
+                "max_guest_per_host_mol": 0.5,
+                "host_mode": "pure_CO2_ice",
+            },
+            "CO_at_H2O": {"max_guest_per_host_mol": 0.25},
+            "CO2_at_H2O": {"max_guest_per_host_mol": 0.5},
+            "H2O_total_guest_capacity": {
+                "max_total_guest_per_host_mol": None,
+            },
         },
     },
     "initial_conditions": {
@@ -306,6 +364,10 @@ DEFAULTS: Dict[str, Any] = {
         "boundary_condition": "outflow",
         "clip_negative": True,
         "negative_tolerance": 1.0e-40,
+        # Phase exchange should conserve each molecular species locally.
+        "check_phase_conservation": True,
+        "phase_conservation_rtol": 1.0e-10,
+        "phase_conservation_atol": 1.0e-30,
     },
 }
 
@@ -368,6 +430,13 @@ def validate_params(p: Dict[str, Any]) -> None:
     if p["volatiles"]["phase_relaxation_time_yr"] <= 0:
         raise ValueError("volatiles.phase_relaxation_time_yr must be positive.")
 
+    if p["dust"]["phase_partition"].get("preserve_carrier_history") not in {True, False}:
+        raise ValueError("dust.phase_partition.preserve_carrier_history must be boolean.")
+
+    br = p["dust"].get("backreaction", {})
+    if isinstance(br, dict) and br.get("epsilon_mode", "midplane") not in {"midplane", "column"}:
+        raise ValueError("dust.backreaction.epsilon_mode must be 'midplane' or 'column'.")
+
     if bool(p["vertical"]["enabled"]):
         if int(p["vertical"]["n_z"]) < 8:
             raise ValueError("vertical.n_z should be at least 8.")
@@ -378,14 +447,38 @@ def validate_params(p: Dict[str, Any]) -> None:
         frac = float(p["simulation"]["save_interval_fraction"])
         if frac <= 0:
             raise ValueError("simulation.save_interval_fraction must be positive.")
+    elif float(p["simulation"]["save_interval_yr"]) <= 0:
+        raise ValueError("simulation.save_interval_yr must be positive when supplied.")
+
+    if int(p["output"]["save_2d_every_n_snapshots"]) < 1:
+        raise ValueError("output.save_2d_every_n_snapshots must be at least 1.")
 
 
 def ensure_output_dir(path: Path, overwrite: bool, save_2d: bool) -> None:
+    """Prepare an output directory without leaving stale model snapshots.
+
+    Earlier versions overwrote low-numbered snapshots in place but could leave
+    old high-numbered files behind, causing later analysis to mix two runs.
+    With ``overwrite=True`` only model-generated files/directories are cleared;
+    unrelated material in the output directory is left untouched.
+    """
     if path.exists() and any(path.iterdir()) and not overwrite:
         raise FileExistsError(
             f"Output directory {path} exists and is non-empty. "
             "Set simulation.overwrite: true or choose a new output_dir."
         )
+
+    path.mkdir(parents=True, exist_ok=True)
+    if overwrite:
+        for dirname in ("snapshots", "snapshots_2d"):
+            target = path / dirname
+            if target.exists():
+                shutil.rmtree(target)
+        for filename in ("diagnostics.csv", "resolved_params.yaml"):
+            target = path / filename
+            if target.exists():
+                target.unlink()
+
     (path / "snapshots").mkdir(parents=True, exist_ok=True)
     if save_2d:
         (path / "snapshots_2d").mkdir(parents=True, exist_ok=True)
@@ -1393,81 +1486,90 @@ def release_radii(r, r_edge, dM_release):
     }
     
 def compute_release(state_before, state_after, dt, grid):
+    """Return additive release/source bookkeeping for one phase substep.
+
+    ``dM_<reservoir>`` is the gross positive mass loss from that solid
+    reservoir.  It can exceed the net gas source when material is reassigned
+    among solid reservoirs.  Gas fields include net, positive-gain, and
+    positive-loss terms so those effects can be distinguished explicitly.
+    """
     area = grid["area"]
-    r_edge = grid["r_edge_au"]
-    dlnr = np.log(r_edge[1:] / r_edge[:-1])
+    out: Dict[str, np.ndarray] = {}
 
-    channels = {
-        "CO_pure": [
-            "CO_pure_ice_pebble",
-            "CO_pure_ice_small",
-        ],
-        "CO_at_CO2": [
-            "CO_at_CO2_ice_pebble",
-            "CO_at_CO2_ice_small",
-        ],
-        "CO_at_H2O": [
-            "CO_at_H2O_ice_pebble",
-            "CO_at_H2O_ice_small",
-        ],
-        "CO2_pure": [
-            "CO2_pure_ice_pebble",
-            "CO2_pure_ice_small",
-        ],
-        "CO2_at_H2O": [
-            "CO2_at_H2O_ice_pebble",
-            "CO2_at_H2O_ice_small",
-        ],
-        "H2O_pure": [
-            "H2O_ice_pebble",
-            "H2O_ice_small",
-        ],
-    }
-
-    out = {}
-
-    for channel, fields in channels.items():
+    for channel, fields in ICE_RELEASE_CHANNEL_FIELDS.items():
         dSigma_release = np.zeros_like(grid["r"])
-
         for field in fields:
-            before = state_before[field]
-            after = state_after[field]
-
-            # Gross release from this reservoir during phase update.
-            dSigma_release += np.maximum(before - after, 0.0)
-
-        dM_release = area * dSigma_release
-        Mdot_release = dM_release / dt
-
+            dSigma_release += np.maximum(state_before[field] - state_after[field], 0.0)
         out[f"dSigma_{channel}"] = dSigma_release
-        out[f"dM_{channel}"] = dM_release
-        out[f"Mdot_{channel}"] = Mdot_release
-        out[f"Mdot_dlnr_{channel}"] = Mdot_release / dlnr
-    
-    dSigma_CO_gas_net = state_after["CO_gas"] - state_before["CO_gas"]
-    dM_CO_gas = area * dSigma_CO_gas_net
-    Mdot_CO_gas = dM_CO_gas / dt
-    out["dSigma_CO_gas"] = dSigma_CO_gas_net
-    out["dM_CO_gas"] = dM_CO_gas
-    out["Mdot_CO_gas"] = Mdot_CO_gas
-    out["Mdot_dlnr_CO_gas"] = Mdot_CO_gas / dlnr
-    
-    dSigma_CO2_gas_net = state_after["CO2_gas"] - state_before["CO2_gas"]
-    dM_CO2_gas = area * dSigma_CO2_gas_net
-    Mdot_CO2_gas = dM_CO2_gas / dt
-    out["dSigma_CO2_gas"] = dSigma_CO2_gas_net
-    out["dM_CO2_gas"] = dM_CO2_gas
-    out["Mdot_CO2_gas"] = Mdot_CO2_gas
-    out["Mdot_dlnr_CO2_gas"] = Mdot_CO2_gas / dlnr
-    
-    dSigma_H2O_gas_net = state_after["H2O_gas"] - state_before["H2O_gas"]
-    dM_H2O_gas = area * dSigma_H2O_gas_net
-    Mdot_H2O_gas = dM_H2O_gas / dt
-    out["dSigma_H2O_gas"] = dSigma_H2O_gas_net
-    out["dM_H2O_gas"] = dM_H2O_gas
-    out["Mdot_H2O_gas"] = Mdot_H2O_gas
-    out["Mdot_dlnr_H2O_gas"] = Mdot_H2O_gas / dlnr
+        out[f"dM_{channel}"] = area * dSigma_release
 
+    for species, gas_field in PHASE_GAS_FIELDS.items():
+        delta = state_after[gas_field] - state_before[gas_field]
+        gain = np.maximum(delta, 0.0)
+        loss = np.maximum(-delta, 0.0)
+        out[f"dSigma_{species}_gas"] = delta
+        out[f"dM_{species}_gas"] = area * delta
+        out[f"dSigma_{species}_gas_gain"] = gain
+        out[f"dM_{species}_gas_gain"] = area * gain
+        out[f"dSigma_{species}_gas_loss"] = loss
+        out[f"dM_{species}_gas_loss"] = area * loss
+
+    return out
+
+
+def zero_release_integral(grid: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    """Create a zero-valued container for additive release diagnostics."""
+    zero = np.zeros_like(grid["r"], dtype=float)
+    out: Dict[str, np.ndarray] = {}
+    for channel in ICE_RELEASE_CHANNEL_FIELDS:
+        out[f"dSigma_{channel}"] = zero.copy()
+        out[f"dM_{channel}"] = zero.copy()
+    for species in PHASE_GAS_FIELDS:
+        for suffix in ("", "_gain", "_loss"):
+            out[f"dSigma_{species}_gas{suffix}"] = zero.copy()
+            out[f"dM_{species}_gas{suffix}"] = zero.copy()
+    return out
+
+
+def accumulate_release(
+    accumulator: Dict[str, np.ndarray],
+    increment: Dict[str, np.ndarray],
+) -> None:
+    """Add one phase-substep diagnostic into an interval or lifetime total."""
+    for key, value in increment.items():
+        if key not in accumulator:
+            accumulator[key] = np.zeros_like(value, dtype=float)
+        accumulator[key] += value
+
+
+def release_output_fields(
+    interval: Dict[str, np.ndarray],
+    cumulative: Dict[str, np.ndarray],
+    interval_dt: float,
+    grid: Dict[str, np.ndarray],
+) -> Dict[str, np.ndarray]:
+    """Build snapshot columns from interval and lifetime release integrals.
+
+    Backward-compatible ``dM_*`` fields now mean the integral since the
+    previous saved snapshot.  ``cum_dM_*`` fields are the direct lifetime
+    integral and should be preferred by analysis scripts.
+    """
+    out = {key: value.copy() for key, value in interval.items()}
+    for key, value in cumulative.items():
+        out[f"cum_{key}"] = value.copy()
+
+    dlnr = np.log(grid["r_edge_au"][1:] / grid["r_edge_au"][:-1])
+    safe_dt = max(float(interval_dt), 1.0e-300)
+    for key, value in interval.items():
+        if not key.startswith("dM_"):
+            continue
+        suffix = key[3:]
+        rate = value / safe_dt if interval_dt > 0.0 else np.zeros_like(value)
+        out[f"Mdot_{suffix}"] = rate
+        out[f"Mdot_dlnr_{suffix}"] = rate / dlnr
+
+    out["release_interval_yr"] = np.full_like(grid["r"], interval_dt / YR)
+    out["release_semantics_version"] = np.full_like(grid["r"], 2.0)
     return out
 
 
@@ -1794,6 +1896,36 @@ def phase_relaxation_step(
     return state
 
 
+def check_phase_conservation(
+    before: Dict[str, np.ndarray],
+    after: Dict[str, np.ndarray],
+    params: Dict[str, Any],
+) -> None:
+    """Verify local conservation of CO, CO2, and H2O in the phase substep."""
+    if not bool(params["numerics"].get("check_phase_conservation", True)):
+        return
+
+    rtol = float(params["numerics"].get("phase_conservation_rtol", 1.0e-10))
+    atol = float(params["numerics"].get("phase_conservation_atol", 1.0e-30))
+    totals = {
+        "CO": total_CO,
+        "CO2": total_CO2,
+        "H2O": total_H2O,
+    }
+    for species, func in totals.items():
+        b = func(before)
+        a = func(after)
+        err = np.abs(a - b)
+        tol = atol + rtol * np.maximum(np.maximum(np.abs(a), np.abs(b)), 1.0e-300)
+        if np.any(err > tol):
+            idx = int(np.nanargmax(err / np.maximum(tol, 1.0e-300)))
+            raise RuntimeError(
+                f"Phase update failed local {species} conservation at radial cell {idx}: "
+                f"before={b[idx]:.8e}, after={a[idx]:.8e}, "
+                f"abs_error={err[idx]:.3e}, tolerance={tol[idx]:.3e}."
+            )
+
+
 # -----------------------------
 # Finite-volume transport
 # -----------------------------
@@ -2079,6 +2211,17 @@ def carbon_oxygen_columns(state: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]
             )
             / np.maximum(total_CO(state), eps)
         ),
+        # Explicit aliases clarify that "hidden" here means assigned to a
+        # mixed/matrix-associated reservoir, not necessarily unobservable.
+        "matrix_associated_CO_fraction": (
+            (
+                state[co_at_co2_field("pebble")]
+                + state[co_at_h2o_field("pebble")]
+                + state[co_at_co2_field("small")]
+                + state[co_at_h2o_field("small")]
+            )
+            / np.maximum(total_CO(state), eps)
+        ),
         "gas_CO_fraction": state["CO_gas"] / np.maximum(total_CO(state), eps),
     }
 
@@ -2215,6 +2358,7 @@ def initialize_diagnostics(path: Path) -> None:
         "step",
         "time_yr",
         "dt_yr",
+        "M_gas_msun",
         "M_gas_fixed_msun",
         "M_ref_pebble_mearth",
         "M_ref_small_mearth",
@@ -2222,6 +2366,7 @@ def initialize_diagnostics(path: Path) -> None:
         "M_CO_gas_mearth",
         "M_CO_solid_mearth",
         "M_CO_hidden_mearth",
+        "M_CO_matrix_mearth",
         "M_CO_pebble_mearth",
         "M_CO_small_mearth",
         "M_CO2_total_mearth",
@@ -2294,6 +2439,8 @@ def append_diagnostics(
         "step": step,
         "time_yr": t / YR,
         "dt_yr": dt / YR,
+        "M_gas_msun": annulus_integral_sigma(area, disk["Sigma_g"]) / MSUN,
+        # Deprecated compatibility alias; the gas may evolve when update_gas=True.
         "M_gas_fixed_msun": annulus_integral_sigma(area, disk["Sigma_g"]) / MSUN,
         "M_ref_pebble_mearth": mass_field(ref_field("pebble")) / MEARTH,
         "M_ref_small_mearth": mass_field(ref_field("small")) / MEARTH,
@@ -2301,6 +2448,7 @@ def append_diagnostics(
         "M_CO_gas_mearth": mass_field("CO_gas") / MEARTH,
         "M_CO_solid_mearth": mass_array(CO_peb + CO_small) / MEARTH,
         "M_CO_hidden_mearth": mass_array(CO_hidden) / MEARTH,
+        "M_CO_matrix_mearth": mass_array(CO_hidden) / MEARTH,
         "M_CO_pebble_mearth": mass_array(CO_peb) / MEARTH,
         "M_CO_small_mearth": mass_array(CO_small) / MEARTH,
         "M_CO2_total_mearth": mass_array(total_CO2(state)) / MEARTH,
@@ -2391,114 +2539,92 @@ def run(params: Dict[str, Any]) -> None:
 
     diag_path = output_dir / "diagnostics.csv"
     initialize_diagnostics(diag_path)
-    
-    update_gas = bool(params["gas"]["update_gas"])
+
+    update_gas = bool(params["gas"].get("update_gas", False))
+    backreaction = get_backreaction_enabled(params)
 
     t = 0.0
     step = 0
     snap_idx = 0
     next_save = 0.0
     last_dt = 0.0
+    release_interval_dt = 0.0
+    release_since_output = zero_release_integral(grid)
+    release_cumulative = zero_release_integral(grid)
 
-    release = {"Mdot_dlnr_CO_pure": None,
-               "Mdot_dlnr_CO_at_CO2": None,
-               "Mdot_dlnr_CO_at_H2O": None,
-               "Mdot_dlnr_CO2_pure": None,
-               "Mdot_dlnr_CO2_at_H2O": None,
-               "dM_CO_pure": None,
-               "dM_CO_at_CO2": None,
-               "dM_CO_at_H2O": None,
-               "dM_CO2_pure": None,
-               "dM_CO2_at_H2O": None,
-               "dSigma_CO_gas": None,
-               "dSigma_CO2_gas": None,
-               "dSigma_H2O_gas": None,
-               "dM_H2O_pure": None,
-               "dM_CO_gas": None,
-               "Mdot_CO_gas": None,
-               "Mdot_dlnr_CO_gas": None,
-               "dM_CO2_gas": None,
-               "Mdot_CO2_gas": None,
-               "Mdot_dlnr_CO2_gas": None,
-               "dM_H2O_gas": None,
-               "Mdot_H2O_gas": None,
-               "Mdot_dlnr_H2O_gas": None,
-               }
-
-    br_diag = {}
+    br_diag: Dict[str, np.ndarray] = {}
+    initial_release = release_output_fields(
+        release_since_output, release_cumulative, release_interval_dt, grid
+    )
     write_outputs(
         output_dir, snap_idx, step, t, last_dt, state, grid, disk, carrier_coeff,
-        vertical, params, diag_path, release, br_diag,
+        vertical, params, diag_path, initial_release, br_diag,
     )
     snap_idx += 1
     next_save += save_interval
-    
-    backreaction = get_backreaction_enabled(params)
 
     progress_every = int(params["simulation"]["progress_every"])
+    gas_mode = "evolving prescribed-inflow" if update_gas else "fixed-surface-density"
     print(f"Writing outputs to: {output_dir}")
     print(f"t_end = {t_end / YR:.6g} yr, save_interval = {save_interval / YR:.6g} yr")
     print(
         "1+1D model: radial transport with vertically averaged snow-surface phase terms; "
-        "evolving H2/He gas disk."
+        f"{gas_mode} H2/He gas disk."
     )
 
     while t < t_end * (1.0 - 1.0e-14):
         dt = compute_timestep(grid, disk, carrier_coeff, params)
         dt = min(dt, t_end - t, next_save - t if next_save > t else dt)
-
         if dt <= 0.0:
             dt = min(compute_timestep(grid, disk, carrier_coeff, params), t_end - t)
 
-            
         br_diag = {}
         if update_gas:
-            
-            # Apply BR from current solids
+            # Use current solids to obtain the feedback-modified gas velocity
+            # for this gas advection substep.
             if backreaction:
-                # Refresh no-BR quantities from current Sigma_g
                 disk = refresh_disk_after_sigma_update(grid, disk, params)
                 carrier_coeff = build_carrier_coefficients(grid, disk, params)
                 disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(
                     state, disk, carrier_coeff, params
                 )
-                
             disk = update_gas_surface_density(disk, dt, grid, params)
-            
+
         disk = refresh_disk_after_sigma_update(grid, disk, params)
         carrier_coeff = build_carrier_coefficients(grid, disk, params)
-        # Apply backreaction using updated disc
         if backreaction:
             disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(
-                                            state,
-                                            disk,
-                                            carrier_coeff,
-                                            params,
-                                            )
+                state, disk, carrier_coeff, params
+            )
 
         vertical = make_vertical_structure(grid, disk, carrier_coeff, params)
 
         state = transport_step(state, dt, grid, disk, carrier_coeff, params)
-        state_before_phase = {k: v.copy() for k, v in state.items()}
+        state_before_phase = {key: value.copy() for key, value in state.items()}
         state = phase_relaxation_step(state, dt, vertical, params)
-        release = compute_release(
-            state_before_phase,
-            state,
-            dt,
-            grid,
-        )
+        check_phase_conservation(state_before_phase, state, params)
+
+        step_release = compute_release(state_before_phase, state, dt, grid)
+        accumulate_release(release_since_output, step_release)
+        accumulate_release(release_cumulative, step_release)
+        release_interval_dt += dt
 
         t += dt
         step += 1
         last_dt = dt
 
         if t >= next_save - 1.0e-9 * save_interval or t >= t_end * (1.0 - 1.0e-14):
+            release_to_write = release_output_fields(
+                release_since_output, release_cumulative, release_interval_dt, grid
+            )
             write_outputs(
                 output_dir, snap_idx, step, t, last_dt, state, grid, disk,
-                carrier_coeff, vertical, params, diag_path, release, br_diag,
+                carrier_coeff, vertical, params, diag_path, release_to_write, br_diag,
             )
             snap_idx += 1
             next_save += save_interval
+            release_since_output = zero_release_integral(grid)
+            release_interval_dt = 0.0
 
         if progress_every > 0 and step % progress_every == 0:
             print(
@@ -2512,7 +2638,7 @@ def run(params: Dict[str, Any]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fixed-gas 1+1D mixed-ice volatile transport model with two solid carriers."
+        description="1+1D mixed-ice volatile transport model with optional prescribed gas evolution."
     )
     parser.add_argument("params", type=str, help="Path to YAML parameter file.")
     return parser.parse_args()

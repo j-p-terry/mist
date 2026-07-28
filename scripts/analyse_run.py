@@ -46,7 +46,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-from colorspacious import cspace_converter
+try:
+    from colorspacious import cspace_converter
+except ImportError:  # Optional plotting enhancement.
+    cspace_converter = None
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.colors as mcolors
 from matplotlib import rc as mplrc
@@ -74,17 +77,15 @@ def create_perceptually_uniform_cmap(start_color: list, end_color: list, N: int 
         start_color = hex_to_rgb(start_color) if "#" in start_color else mcolors.to_rgb(start_color)
     if type(end_color) is str:
         end_color = hex_to_rgb(end_color) if "#" in end_color else mcolors.to_rgb(end_color)
-    # Convert the start and end colors from RGB to LAB color space
-    converter = cspace_converter("sRGB1", "CAM02-UCS")
-    start_color_lab = converter(start_color)
-    end_color_lab = converter(end_color)
-    
-    # Create a linear interpolation of colors in LAB color space
-    lab_colors = np.linspace(start_color_lab, end_color_lab, N)
-    
-    # Convert the interpolated colors back to RGB
-    converter = cspace_converter("CAM02-UCS", "sRGB1")
-    rgb_colors = converter(lab_colors)
+    if cspace_converter is None:
+        rgb_colors = np.linspace(start_color, end_color, N)
+    else:
+        converter = cspace_converter("sRGB1", "CAM02-UCS")
+        start_color_lab = converter(start_color)
+        end_color_lab = converter(end_color)
+        lab_colors = np.linspace(start_color_lab, end_color_lab, N)
+        converter = cspace_converter("CAM02-UCS", "sRGB1")
+        rgb_colors = converter(lab_colors)
     
     # Ensure all RGB values are within the valid range [0, 1]
     rgb_colors = np.clip(rgb_colors, 0, 1)
@@ -261,7 +262,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
         total = np.maximum(diag["M_CO_total_mearth"].to_numpy(), EPS)
         plt.figure(figsize=(8, 5))
         plt.plot(diag["time_yr"], diag["M_CO_gas_mearth"] / total, label="CO gas / total CO", color=color_list[0])
-        plt.plot(diag["time_yr"], diag["M_CO_hidden_mearth"] / total, label="hidden CO / total CO", color=color_list[1])
+        plt.plot(diag["time_yr"], diag["M_CO_hidden_mearth"] / total, label="matrix-associated CO / total CO", color=color_list[1])
         if "M_CO_solid_mearth" in diag.columns:
             plt.plot(diag["time_yr"], diag["M_CO_solid_mearth"] / total, label="solid CO / total CO", color=color_list[2])
         plt.xlabel("Time [yr]")
@@ -759,7 +760,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Surface density [g cm$^{-2}$]")
     plt.ylim(bottom=1e-8)
-    plt.title(f"Carrier-resolved 1D surface density")#, snapshot {snap_index}")
+    plt.title(f"Carrier-resolved solid profiles")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/final_carrier_profiles.png")
@@ -770,9 +771,9 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     for col, label in [
         ("C_over_O_gas", "gas C/O"),
         ("C_over_O_solid", "solid C/O"),
-        ("C_over_O_pebble", "pebble C/O"),
-        ("C_over_O_small", "small-grain C/O"),
-        ("hidden_CO_fraction", "hidden CO fraction"),
+        ("C_over_O_pebble", "pebble volatile C/O"),
+        ("C_over_O_small", "small-grain volatile C/O"),
+        ("hidden_CO_fraction", "matrix-associated CO fraction"),
         ("gas_CO_fraction", "gas CO fraction"),
     ]:
         if col in df.columns:
@@ -977,8 +978,8 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         (
             "co_hidden_fraction_budget",
             "time_radius_hidden_co_fraction.png",
-            "Hidden CO fraction",
-            "hidden CO fraction",
+            "Matrix-associated CO fraction",
+            "matrix-associated CO fraction",
             False,
             None, None,
         ),
@@ -1042,7 +1043,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "C_over_O_pebble_masked",
             "time_radius_pebble_c_o_masked.png",
             "Pebble volatile C/O",
-            "pebble C/O",
+            "pebble volatile C/O",
             True,
             1e-3, 1e1,
         ),
@@ -1050,7 +1051,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             "C_over_O_small_masked",
             "time_radius_small_c_o_masked.png",
             "Small-grain volatile C/O",
-            "small-grain C/O",
+            "small-grain volatile C/O",
             True,
             1e-3, 1e1,
         ),
@@ -1543,11 +1544,11 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         vmin=1e-6,
         vmax=1e0,
     )
-    print("Plotting hidden CO fraction")
+    print("Plotting matrix-associated CO fraction")
     pcolor_r_z(
         r, z_over_r, hidden_frac,
-        f"Hidden CO fraction",# snapshot {snap_index}",
-        r"$\Sigma_{\rm CO,hidden}/\Sigma_{\rm CO}$",
+        f"Matrix-associated CO fraction",# snapshot {snap_index}",
+        r"$\Sigma_{\rm CO,matrix}/\Sigma_{\rm CO}$",
         Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
         log_value=True,
         overlay=None,
@@ -1558,7 +1559,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     #     z_over_r,
     #     hidden_frac,
     #     f"Hidden CO fraction, snapshot {snap_index}",
-    #     r"$\Sigma_{\rm CO,hidden}/\Sigma_{\rm CO}$",
+    #     r"$\Sigma_{\rm CO,matrix}/\Sigma_{\rm CO}$",
     #     Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
     #     log_value=False,
     #     overlay=None,
@@ -1807,9 +1808,9 @@ def make_paper_final_1d_summary(df: pd.DataFrame, analysis_dir: Path, snap_index
     ax.grid(True, which="both", alpha=0.25)
 
     ax = axes[1]
-    ax.semilogx(r, df["C_over_O_pebble_masked"], label="pebble C/O", color=color_list[0], linewidth=2.0)
-    ax.semilogx(r, df["C_over_O_small_masked"], label="small-grain C/O", color=color_list[1], linewidth=2.0)
-    ax.semilogx(r, hidden_frac, label="hidden CO fraction", color=color_list[2], linewidth=2.0, linestyle="--")
+    ax.semilogx(r, df["C_over_O_pebble_masked"], label="pebble volatile C/O", color=color_list[0], linewidth=2.0)
+    ax.semilogx(r, df["C_over_O_small_masked"], label="small-grain volatile C/O", color=color_list[1], linewidth=2.0)
+    ax.semilogx(r, hidden_frac, label="matrix-associated CO fraction", color=color_list[2], linewidth=2.0, linestyle="--")
     ax.set_xlabel("Radius [au]")
     ax.set_ylabel("(C/O) or fraction")
     ax.set_ylim(-0.02, 1.02)
@@ -1821,11 +1822,45 @@ def make_paper_final_1d_summary(df: pd.DataFrame, analysis_dir: Path, snap_index
     plt.close(fig)
 
 
+def _load_cumulative_release(
+    snapshots: Sequence[SnapshotInfo],
+    columns: Sequence[str],
+) -> Tuple[Dict[str, np.ndarray], str, bool]:
+    """Read cumulative release with version-aware compatibility handling."""
+    if not snapshots:
+        return {}, "missing", False
+
+    final = read_snapshot(snapshots[-1].path)
+    result: Dict[str, np.ndarray] = {}
+
+    if any(f"cum_{column}" in final.columns for column in columns):
+        for column in columns:
+            cumulative_name = f"cum_{column}"
+            if cumulative_name in final.columns:
+                result[column] = final[cumulative_name].to_numpy(dtype=float)
+        return result, "direct_cumulative_v2", True
+
+    interval_v2 = "release_semantics_version" in final.columns or "release_interval_yr" in final.columns
+    for column in columns:
+        cumulative = None
+        for snap in snapshots:
+            df = read_snapshot(snap.path)
+            if column not in df.columns:
+                continue
+            values = df[column].to_numpy(dtype=float)
+            cumulative = values.copy() if cumulative is None else cumulative + values
+        if cumulative is not None:
+            result[column] = cumulative
+
+    mode = "summed_intervals_v2" if interval_v2 else "legacy_snapshot_sample_v1"
+    return result, mode, bool(interval_v2)
+
+
 def make_paper_cumulative_release_profile(
     snapshots: Sequence[SnapshotInfo],
     analysis_dir: Path,
 ) -> None:
-    """Paper-facing cumulative CO release profile using all selected snapshots."""
+    """Paper-facing cumulative gross reservoir-loss profile."""
     if not snapshots:
         return
 
@@ -1842,31 +1877,32 @@ def make_paper_cumulative_release_profile(
         ("dM_CO_at_H2O", "CO_at_H2O"),
         ("dM_CO2_pure", "CO2_pure"),
         ("dM_CO2_at_H2O", "CO2_at_H2O"),
-        # ("dM_H2O_pure", "H2O_pure"), # maybe add pure
     ]
+    cumulative, mode, reliable = _load_cumulative_release(
+        snapshots, [column for column, _ in channels]
+    )
+    note = (
+        f"release_mode={mode}\n"
+        f"release_diagnostics_reliable={reliable}\n"
+        "dM reservoir channels are gross positive losses during the phase update; "
+        "they are not identical to the net gas source.\n"
+    )
+    (Path(analysis_dir) / "release_diagnostics_info.txt").write_text(note, encoding="utf-8")
 
-    cumulative_by_channel: Dict[str, np.ndarray] = {}
-    have_any = False
-    for col, channel in channels:
-        cumulative = np.zeros_like(r, dtype=float)
-        have_channel = False
-        for snap in snapshots:
-            df = read_snapshot(snap.path)
-            if col in df.columns:
-                cumulative += df[col].to_numpy(dtype=float)
-                have_channel = True
-        if have_channel:
-            cumulative_by_channel[channel] = cumulative
-            have_any = True
-
-    if not have_any:
+    if not cumulative:
+        return
+    if not reliable:
+        print(
+            "WARNING: legacy release columns sample only saved phase steps; "
+            "skipping the cumulative release figure. Rerun with the fixed model script."
+        )
         return
 
     fig, ax = plt.subplots(figsize=(8.6, 4.8))
-    for channel in ["CO_pure", "CO_at_CO2", "CO_at_H2O", "CO2_pure", "CO2_at_H2O"]:#, "H2O_pure"]: # maybe add pure
-        if channel not in cumulative_by_channel:
+    for column, channel in channels:
+        if column not in cumulative:
             continue
-        profile = cumulative_by_channel[channel] / np.maximum(dlnr, EPS) / MEARTH
+        profile = cumulative[column] / np.maximum(dlnr, EPS) / MEARTH
         ax.semilogx(
             r,
             profile,
@@ -1876,13 +1912,14 @@ def make_paper_cumulative_release_profile(
         )
 
     ax.set_xlabel("Radius [au]")
-    ax.set_ylabel(r"$dM_{\rm ice,rel}^{\rm cum}/d\ln r$ [$M_\oplus$]")
-    ax.set_title("Cumulative volatile release by reservoir")
+    ax.set_ylabel(r"$dM_{\rm ice,gross}^{\rm cum}/d\ln r$ [$M_\oplus$]")
+    ax.set_title("Cumulative gross loss from volatile-ice reservoirs")
     ax.legend(frameon=True)
     ax.grid(True, which="both", alpha=0.25)
     fig.tight_layout()
     fig.savefig(Path(analysis_dir) / "paper_cumulative_release_profile.png", dpi=240)
     plt.close(fig)
+
 
 
 def make_paper_2d_morphology(
@@ -1965,13 +2002,13 @@ def make_paper_2d_morphology(
         (
             axes[0, 1],
             hidden_frac,
-            r"$\Sigma_{\rm CO,hidden}/\Sigma_{\rm CO}$",
+            r"$\Sigma_{\rm CO,matrix}/\Sigma_{\rm CO}$",
             True,
             1e-6,
             1e0,
             "viridis",
             None,
-            "(b) Hidden CO fraction",
+            "(b) Matrix-associated CO fraction",
         ),
         (
             axes[1, 0],
@@ -2037,11 +2074,16 @@ def write_summary_metrics(
         add("snapshot_index", float(snap_index), "Selected snapshot index.")
         add("snapshot_time_yr", float(df["time_yr"].iloc[0]), "Selected snapshot time.")
 
-    if has_columns(df, ["r_au", "hidden_CO_fraction"]):
-        vals = df["hidden_CO_fraction"].to_numpy()
+    matrix_fraction_col = (
+        "matrix_associated_CO_fraction"
+        if "matrix_associated_CO_fraction" in df.columns
+        else "hidden_CO_fraction"
+    )
+    if has_columns(df, ["r_au", matrix_fraction_col]):
+        vals = df[matrix_fraction_col].to_numpy()
         j = int(np.nanargmax(vals))
-        add("max_hidden_CO_fraction", float(np.nanmax(vals)), "Maximum radial hidden-CO fraction.")
-        add("r_at_max_hidden_CO_fraction_au", float(df["r_au"].iloc[j]), "Radius of max hidden-CO fraction.")
+        add("max_hidden_CO_fraction", float(np.nanmax(vals)), "Maximum radial matrix-associated CO fraction.")
+        add("r_at_max_hidden_CO_fraction_au", float(df["r_au"].iloc[j]), "Radius of maximum matrix-associated CO fraction.")
 
     if has_columns(df, ["gas_CO_fraction"]):
         add("min_gas_CO_fraction", float(np.nanmin(df["gas_CO_fraction"])), "Minimum radial gas-phase CO fraction.")
@@ -2078,6 +2120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--snap", type=str, default="latest", help="Snapshot: latest, first, middle, or integer index.")
     parser.add_argument("--max-time-radius-snaps", type=int, default=200, help="Maximum snapshots used for time-radius plots.")
     parser.add_argument("--plot_entrap_surfaces", type=int, default=0, help="Plot entrapped snow surfaces.")
+    parser.add_argument("--skip-2d", action="store_true", help="Skip all 2D NPZ analysis even when files exist.")
     return parser.parse_args()
 
 
@@ -2110,7 +2153,7 @@ def main() -> None:
         tr_snaps = snapshots
     make_time_radius_plots(tr_snaps, analysis_dir)
 
-    snaps2d = list_snapshots_2d(output_dir)
+    snaps2d = [] if args.skip_2d else list_snapshots_2d(output_dir)
     if snaps2d:
         nearest = min(snaps2d, key=lambda s: abs(s.index - selected.index))
         data2d = read_2d_snapshot(nearest.path)

@@ -1,7 +1,7 @@
 """
 mixed_ice_sweep.py
 
-Generate and analyze a compact 18-run parameter sweep for the 1+1D mixed-ice
+Generate and analyze a compact 21-run parameter sweep for the 1+1D mixed-ice
 transport model.
 
 This script does two things:
@@ -100,7 +100,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import matplotlib.pyplot as plt
-from colorspacious import cspace_converter
+try:
+    from colorspacious import cspace_converter
+except ImportError:  # Optional plotting enhancement.
+    cspace_converter = None
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.colors as mcolors
 from matplotlib import rc as mplrc
@@ -137,17 +140,17 @@ def create_perceptually_uniform_cmap(start_color: list, end_color: list, N: int 
         start_color = hex_to_rgb(start_color) if "#" in start_color else mcolors.to_rgb(start_color)
     if type(end_color) is str:
         end_color = hex_to_rgb(end_color) if "#" in end_color else mcolors.to_rgb(end_color)
-    # Convert the start and end colors from RGB to LAB color space
-    converter = cspace_converter("sRGB1", "CAM02-UCS")
-    start_color_lab = converter(start_color)
-    end_color_lab = converter(end_color)
-    
-    # Create a linear interpolation of colors in LAB color space
-    lab_colors = np.linspace(start_color_lab, end_color_lab, N)
-    
-    # Convert the interpolated colors back to RGB
-    converter = cspace_converter("CAM02-UCS", "sRGB1")
-    rgb_colors = converter(lab_colors)
+    if cspace_converter is None:
+        # Graceful fallback when colorspacious is not installed.
+        rgb_colors = np.linspace(start_color, end_color, N)
+    else:
+        # Interpolate in CAM02-UCS for better perceptual uniformity.
+        converter = cspace_converter("sRGB1", "CAM02-UCS")
+        start_color_lab = converter(start_color)
+        end_color_lab = converter(end_color)
+        lab_colors = np.linspace(start_color_lab, end_color_lab, N)
+        converter = cspace_converter("CAM02-UCS", "sRGB1")
+        rgb_colors = converter(lab_colors)
     
     # Ensure all RGB values are within the valid range [0, 1]
     rgb_colors = np.clip(rgb_colors, 0, 1)
@@ -236,7 +239,7 @@ def savefig(path: Path, dpi: int = 200) -> None:
 # ---------------------------------------------------------------------
 def make_run_specs() -> List[Dict[str, Any]]:
     """
-    Compact 18-run sweep.
+    Compact 21-run sweep.
 
     Includes:
       - 5 ice-composition cases, including fiducial
@@ -884,37 +887,73 @@ def release_stats(r_au: np.ndarray, dM_cumulative: np.ndarray) -> Dict[str, floa
 
 
 def cumulative_release(snapshot_files: Sequence[Path]) -> Dict[str, Any]:
-    if not snapshot_files:
-        return {"have_release": False}
+    """Load output-cadence-independent cumulative release diagnostics.
 
-    df0 = read_snapshot(snapshot_files[0])
-    r = df0["r_au"].to_numpy(dtype=float)
+    New model outputs provide ``cum_dM_*`` columns in every snapshot.  For
+    interval-integrated version-2 outputs, summing ``dM_*`` is equivalent.  Old
+    version-1 outputs stored only the single phase step coinciding with each
+    snapshot; those are retained for compatibility but explicitly marked as
+    unreliable and should be regenerated for quantitative release radii.
+    """
+    if not snapshot_files:
+        return {"have_release": False, "release_reliable": False, "release_mode": "missing"}
+
+    first = read_snapshot(snapshot_files[0])
+    final = read_snapshot(snapshot_files[-1])
+    r = first["r_au"].to_numpy(dtype=float)
     out: Dict[str, Any] = {
         "have_release": False,
+        "release_reliable": False,
+        "release_mode": "missing",
         "r_au": r,
     }
 
-    for channel in RELEASE_CHANNELS:
-        out[f"dM_{channel}"] = np.zeros_like(r)
-
-    out["dM_CO_gas"] = np.zeros_like(r)
-
-    for snap in snapshot_files:
-        df = read_snapshot(snap)
+    # Preferred path: direct lifetime integrals from the final snapshot.
+    have_cumulative = any(f"cum_dM_{ch}" in final.columns for ch in RELEASE_CHANNELS)
+    if have_cumulative:
+        out["release_mode"] = "direct_cumulative_v2"
+        out["release_reliable"] = True
         for channel in RELEASE_CHANNELS:
-            cname = f"dM_{channel}"
-            if cname in df.columns:
-                out[cname] += df[cname].to_numpy(dtype=float)
-                out["have_release"] = True
-        if "dM_CO_gas" in df.columns:
-            out["dM_CO_gas"] += df["dM_CO_gas"].to_numpy(dtype=float)
+            colname = f"cum_dM_{channel}"
+            out[f"dM_{channel}"] = (
+                final[colname].to_numpy(dtype=float) if colname in final.columns else np.zeros_like(r)
+            )
+        out["dM_CO_gas"] = (
+            final["cum_dM_CO_gas"].to_numpy(dtype=float)
+            if "cum_dM_CO_gas" in final.columns else np.zeros_like(r)
+        )
+        out["dM_CO_gas_gain"] = (
+            final["cum_dM_CO_gas_gain"].to_numpy(dtype=float)
+            if "cum_dM_CO_gas_gain" in final.columns else np.zeros_like(r)
+        )
+    else:
+        interval_v2 = "release_semantics_version" in final.columns or "release_interval_yr" in final.columns
+        out["release_mode"] = "summed_intervals_v2" if interval_v2 else "legacy_snapshot_sample_v1"
+        out["release_reliable"] = bool(interval_v2)
+        for channel in RELEASE_CHANNELS:
+            out[f"dM_{channel}"] = np.zeros_like(r)
+        out["dM_CO_gas"] = np.zeros_like(r)
+        out["dM_CO_gas_gain"] = np.zeros_like(r)
+        for snap in snapshot_files:
+            df = read_snapshot(snap)
+            for channel in RELEASE_CHANNELS:
+                colname = f"dM_{channel}"
+                if colname in df.columns:
+                    out[f"dM_{channel}"] += df[colname].to_numpy(dtype=float)
+            if "dM_CO_gas" in df.columns:
+                out["dM_CO_gas"] += df["dM_CO_gas"].to_numpy(dtype=float)
+            if "dM_CO_gas_gain" in df.columns:
+                out["dM_CO_gas_gain"] += df["dM_CO_gas_gain"].to_numpy(dtype=float)
 
     for channel in RELEASE_CHANNELS:
+        if np.any(out[f"dM_{channel}"] > 0.0):
+            out["have_release"] = True
         stats = release_stats(r, out[f"dM_{channel}"])
         for key, value in stats.items():
             out[f"{key}_{channel}"] = value
 
     return out
+
 
 def compute_classical_co_freezeout_proxy(
     df: pd.DataFrame,
@@ -1135,13 +1174,40 @@ def analyze_run(row: pd.Series) -> Dict[str, Any]:
 
     rel = cumulative_release(snaps)
     result["have_release"] = bool(rel["have_release"])
+    result["release_diagnostics_reliable"] = bool(rel.get("release_reliable", False))
+    result["release_diagnostics_mode"] = rel.get("release_mode", "missing")
+
+    initial_df = read_snapshot(snaps[0])
+    initial_area = annulus_area_cm2(initial_df["r_au"].to_numpy(dtype=float))
+    initial_channel_fields = {
+        "CO_pure": ("CO_pure_ice_pebble", "CO_pure_ice_small"),
+        "CO_at_CO2": ("CO_at_CO2_ice_pebble", "CO_at_CO2_ice_small"),
+        "CO_at_H2O": ("CO_at_H2O_ice_pebble", "CO_at_H2O_ice_small"),
+    }
     for channel in RELEASE_CHANNELS:
         for metric in ("R_peak", "R10", "R50", "R90", "Mtot_Mearth"):
-            result[f"{metric}_{channel}"] = rel.get(f"{metric}_{channel}", np.nan)
+            value = rel.get(f"{metric}_{channel}", np.nan)
+            # Legacy v1 files sampled only the phase step coincident with each
+            # output. Do not silently turn those cadence-dependent samples into
+            # paper-facing release radii.
+            if not result["release_diagnostics_reliable"]:
+                value = np.nan
+            result[f"{metric}_{channel}"] = value
+        initial_mass = sum(
+            float(np.nansum(initial_area * col(initial_df, field)))
+            for field in initial_channel_fields[channel]
+        )
+        result[f"initial_Mearth_{channel}"] = initial_mass / MEARTH
+        result[f"gross_release_over_initial_{channel}"] = (
+            result[f"Mtot_Mearth_{channel}"] / max(initial_mass / MEARTH, EPS)
+            if initial_mass > 0.0 else np.nan
+        )
 
-    result["total_CO_release_Mearth"] = float(
+    result["total_CO_gross_release_Mearth"] = float(
         sum(result.get(f"Mtot_Mearth_{ch}", 0.0) for ch in RELEASE_CHANNELS)
     )
+    # Backward-compatible alias.
+    result["total_CO_release_Mearth"] = result["total_CO_gross_release_Mearth"]
 
     return result
 
@@ -1221,7 +1287,6 @@ CHANNEL_LABELS = {
     "CO_pure": "pure CO",
     "CO_at_CO2": r"CO@CO$_2$",
     "CO_at_H2O": r"CO@H$_2$O",
-    "CO2_pure": "pure CO",
     "CO2_pure": r"pure CO$_2$",
     "CO2_at_H2O": r"CO$_{2}$@H$_2$O",
 }
@@ -1313,7 +1378,7 @@ def plot_paper_ice_suite_summary(
     """
     Paper-facing two-panel summary:
       (a) final global CO budget,
-      (b) matrix-dependent median CO release radii.
+      (b) matrix-dependent median gross-loss radii.
     """
     if names is None:
         names = ICE_SUITE_NAMES
@@ -1389,8 +1454,8 @@ def plot_paper_ice_suite_summary(
     ax.set_yscale("log")
     ax.set_xticks(x)
     ax.set_xticklabels([pretty_run_label(n, multiline=True) for n in release_df["run_name"]], rotation=0)
-    ax.set_ylabel(r"Median release radius, $R_{50}$ [au]")
-    ax.set_title("Matrix-dependent CO release")
+    ax.set_ylabel(r"Median gross-loss radius, $R_{50}$ [au]")
+    ax.set_title("Matrix-dependent gross CO-reservoir loss")
     ax.legend(
         loc="upper center",
         bbox_to_anchor=(0.5, 1.14),
@@ -1410,7 +1475,7 @@ def plot_paper_fiducial_release_profile(
     analysis_dir: Path,
     run_name: str = "fiducial",
 ) -> None:
-    """Paper-facing cumulative release profile for one representative run."""
+    """Paper-facing cumulative gross reservoir-loss profile for one representative run."""
     sub = df[df["run_name"] == run_name]
     if sub.empty:
         return
@@ -1436,8 +1501,8 @@ def plot_paper_fiducial_release_profile(
         )
 
     ax.set_xlabel("Radius [au]")
-    ax.set_ylabel(r"$dM_{\rm CO,rel}^{\rm cum}/d\ln r$ [$M_\oplus$]")
-    ax.set_title(f"Cumulative CO release in the {pretty_run_label(run_name)} run")
+    ax.set_ylabel(r"$dM_{\rm CO,gross}^{\rm cum}/d\ln r$ [$M_\oplus$]")
+    ax.set_title(f"Cumulative gross CO-reservoir loss in the {pretty_run_label(run_name)} run")
     ax.legend(frameon=True)
     ax.grid(True, which="both", alpha=0.25)
     fig.tight_layout()
@@ -1474,7 +1539,7 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
         ax_st.set_yscale("log")
         ax_st.set_xlabel(r"Pebble Stokes number, $St_{\rm peb}$")
         ax_st.set_ylabel(r"$R_{50}$ [au]")
-        ax_st.set_title("(a) Pebble drift")
+        ax_st.set_title("(a) Pebble coupling (drift + settling)")
         ax_st.legend(frameon=True)
         ax_st.grid(True, which="both", alpha=0.25)
 
@@ -1486,7 +1551,7 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
             sub["global_C_over_O_pebble"],
             marker="o",
             linewidth=2.0,
-            label="pebble C/O",
+            label="pebble volatile C/O",
             color=color_list[0],
         )
         ax_cond.plot(
@@ -1494,7 +1559,7 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
             sub["global_C_over_O_small"],
             marker="o",
             linewidth=2.0,
-            label="small-grain C/O",
+            label="small-grain volatile C/O",
             color=color_list[1],
         )
         ax_cond.plot(
@@ -1519,7 +1584,7 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
             sub["final_hidden_CO_fraction"],
             marker="o",
             linewidth=2.0,
-            label="hidden CO fraction",
+            label="matrix-associated CO fraction",
             color=color_list[0],
         )
         ax_vert.plot(
@@ -1527,7 +1592,7 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
             sub["global_C_over_O_pebble"],
             marker="o",
             linewidth=2.0,
-            label="pebble C/O",
+            label="pebble volatile C/O",
             color=color_list[1],
         )
         ax_vert.plot(
@@ -1535,7 +1600,7 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
             sub["global_C_over_O_small"],
             marker="o",
             linewidth=2.0,
-            label="small-grain C/O",
+            label="small-grain volatile C/O",
             color=color_list[2],
         )
         ax_vert.set_xlabel(r"$T_{\rm atm}/T_{\rm mid}$")
@@ -1552,7 +1617,7 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
             sub["final_hidden_CO_fraction"],
             marker="o",
             linewidth=2.0,
-            label="hidden CO fraction",
+            label="matrix-associated CO fraction",
             color=color_list[0],
         )
         ax_alpha.plot(
@@ -1582,7 +1647,7 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
     plt.close(fig)
     
 def plot_ice_release(df: pd.DataFrame, analysis_dir: Path) -> None:
-    """Standalone paper-ready R50 release-radius summary for the ice suite."""
+    """Standalone paper-ready R50 gross-loss-radius summary for the ice suite."""
     names = ICE_SUITE_NAMES
     sub = ordered(df, names)
     if sub.empty:
@@ -1601,8 +1666,8 @@ def plot_ice_release(df: pd.DataFrame, analysis_dir: Path) -> None:
     ax.set_yscale("log")
     ax.set_xticks(x)
     ax.set_xticklabels([pretty_run_label(n, multiline=True) for n in sub["run_name"]])
-    ax.set_ylabel(r"Median release radius, $R_{50}$ [au]")
-    ax.set_title("Ice matrix controls where CO enters the gas")
+    ax.set_ylabel(r"Median gross-loss radius, $R_{50}$ [au]")
+    ax.set_title("Ice matrix controls where CO reservoirs are depleted")
     ax.legend(frameon=True, ncol=3)
     ax.grid(True, which="both", axis="y", alpha=0.25)
     fig.tight_layout()
@@ -1659,8 +1724,8 @@ def plot_cumulative_release_profiles(df: pd.DataFrame, analysis_dir: Path) -> No
                 linewidth=1.8,
             )
         ax.set_xlabel("Radius [au]")
-        ax.set_ylabel(r"$dM_{\rm CO,rel}^{\rm cum}/d\ln r$ [$M_\oplus$]")
-        ax.set_title(f"Cumulative CO release: {pretty_run_label(row['run_name'])}")
+        ax.set_ylabel(r"$dM_{\rm CO,gross}^{\rm cum}/d\ln r$ [$M_\oplus$]")
+        ax.set_title(f"Cumulative gross CO-reservoir loss: {pretty_run_label(row['run_name'])}")
         ax.legend(frameon=True)
         ax.grid(True, which="both", alpha=0.25)
         fig.tight_layout()
@@ -1689,7 +1754,7 @@ def plot_transport(df: pd.DataFrame, analysis_dir: Path) -> None:
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel(r"Pebble Stokes number, $St_{\rm peb}$")
-        ax.set_ylabel(r"Median release radius, $R_{50}$ [au]")
+        ax.set_ylabel(r"Median gross-loss radius, $R_{50}$ [au]")
         ax.set_title("Sensitivity to pebble drift")
         ax.legend(frameon=True)
         ax.grid(True, which="both", alpha=0.25)
@@ -1701,7 +1766,7 @@ def plot_transport(df: pd.DataFrame, analysis_dir: Path) -> None:
     if not sub.empty:
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.plot(sub["alpha"], sub["final_hidden_CO_fraction"], marker="o",
-                linewidth=2.0, label="hidden CO fraction", color=color_list[0])
+                linewidth=2.0, label="matrix-associated CO fraction", color=color_list[0])
         ax.plot(sub["alpha"], sub["final_gas_CO_fraction"], marker="o",
                 linewidth=2.0, label="gas CO fraction", color=color_list[1])
         ax.plot(sub["alpha"], sub["global_small_fraction_solid_volatile"], marker="o",
@@ -1724,9 +1789,9 @@ def plot_condensation(df: pd.DataFrame, analysis_dir: Path) -> None:
 
     plt.figure(figsize=(8, 5))
     plt.plot(sub["cond_small"], sub["global_C_over_O_pebble"], marker="o", 
-             label="pebble C/O", color=color_list[0])
+             label="pebble volatile C/O", color=color_list[0])
     plt.plot(sub["cond_small"], sub["global_C_over_O_small"], marker="o", 
-             label="small-grain C/O", color=color_list[1])
+             label="small-grain volatile C/O", color=color_list[1])
     plt.plot(sub["cond_small"], sub["global_small_fraction_solid_volatile"], marker="o", 
              label="small volatile fraction", color=color_list[2])
     plt.xlabel("Small-grain condensation weight")
@@ -1894,9 +1959,9 @@ def plot_vertical(df: pd.DataFrame, analysis_dir: Path) -> None:
         return
 
     plt.figure(figsize=(8, 5))
-    plt.plot(sub["T_atm_factor"], sub["final_hidden_CO_fraction"], marker="o", label="hidden CO fraction", color=color_list[0])
-    plt.plot(sub["T_atm_factor"], sub["global_C_over_O_pebble"], marker="o", label="pebble C/O", color=color_list[1])
-    plt.plot(sub["T_atm_factor"], sub["global_C_over_O_small"], marker="o", label="small-grain C/O", color=color_list[2])
+    plt.plot(sub["T_atm_factor"], sub["final_hidden_CO_fraction"], marker="o", label="matrix-associated CO fraction", color=color_list[0])
+    plt.plot(sub["T_atm_factor"], sub["global_C_over_O_pebble"], marker="o", label="pebble volatile C/O", color=color_list[1])
+    plt.plot(sub["T_atm_factor"], sub["global_C_over_O_small"], marker="o", label="small-grain volatile C/O", color=color_list[2])
     plt.xlabel(r"$T_{\rm atm}/T_{\rm mid}$")
     plt.ylabel("Ratio / fraction")
     plt.title("Vertical temperature sensitivity")
@@ -2436,13 +2501,13 @@ def write_main_results_table(
         rows.append(
             {
                 "Run": _table_run_label(row["run_name"]),
-                r"$f_{\rm CO,hidden}$": _fmt_table_value(row.get("final_hidden_CO_fraction")),
+                r"$f_{\rm CO,matrix}$": _fmt_table_value(row.get("final_hidden_CO_fraction")),
                 r"$f_{\rm CO,gas}$": _fmt_table_value(row.get("final_gas_CO_fraction")),
                 r"$R_{50}^{\rm pure}$ [au]": _fmt_table_value(row.get("R50_CO_pure")),
                 r"$R_{50}^{\rm CO@CO_2}$ [au]": _fmt_table_value(row.get("R50_CO_at_CO2")),
                 r"$R_{50}^{\rm CO@H_2O}$ [au]": _fmt_table_value(row.get("R50_CO_at_H2O")),
-                "Pebble C/O": _fmt_table_value(row.get("global_C_over_O_pebble")),
-                "Small-grain C/O": _fmt_table_value(row.get("global_C_over_O_small")),
+                "Pebble volatile C/O": _fmt_table_value(row.get("global_C_over_O_pebble")),
+                "Small-grain volatile C/O": _fmt_table_value(row.get("global_C_over_O_small")),
             }
         )
 
@@ -2451,7 +2516,7 @@ def write_main_results_table(
         table,
         analysis_dir,
         "table_main_results",
-        latex_caption="Summary of final CO partitioning and median release radii for the main model suite.",
+        latex_caption="Summary of final CO partitioning and median gross reservoir-loss radii for the main model suite.",
         latex_label="tab:main_results",
     )
     return table
@@ -2701,6 +2766,15 @@ def analyze_sweep(sweep_dir: Path, analysis_dir: Path) -> None:
         print(f"No completed runs found. Wrote metrics table to {metrics_path}")
         return
 
+    if "release_diagnostics_reliable" in ok.columns:
+        n_legacy = int((~ok["release_diagnostics_reliable"].fillna(False)).sum())
+        if n_legacy:
+            print(
+                f"WARNING: {n_legacy} completed run(s) use legacy snapshot-sampled "
+                "release diagnostics. Their release masses and radii are set to NaN; "
+                "rerun them with mixed_ice_transport_1p1d_fixed.py."
+            )
+
     ### for paper ####
     plot_paper_ice_suite_summary(ok, analysis_dir)
     plot_paper_fiducial_release_profile(ok, analysis_dir)
@@ -2741,7 +2815,7 @@ def analyze_sweep(sweep_dir: Path, analysis_dir: Path) -> None:
 # CLI
 # ---------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate/analyze an 18-run mixed-ice sweep.")
+    parser = argparse.ArgumentParser(description="Generate/analyze a 21-run mixed-ice sweep.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("generate", help="Generate sweep YAMLs and command files.")

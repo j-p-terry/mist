@@ -1,17 +1,17 @@
-# example_mixed_ice_1p1d_params.yaml
+# example_mist_params_fixed.yaml
 #
 # Run with:
-#   python mixed_ice_transport_1p1d.py example_mixed_ice_1p1d_params.yaml
+#   python mixed_ice_transport_1p1d_fixed.py example_mist_params_fixed.yaml
 #
-# This is version 1.3:
+# This configuration is for the bookkeeping-corrected model:
 #   - 1D radial Eulerian volatile transport
-#   - fixed H2/He gas disk
+#   - optional prescribed-inflow evolution of the H2/He gas surface density
 #   - two solid carriers: pebbles + small grains
 #   - vertical snow surfaces via T(r,z) and shielding A_V(r,z)
 #   - phase source terms use carrier-weighted vertical survival fractions
 #
-# Volatile total_mass_fraction values are mass fractions relative to the fixed
-# background gas surface density, not additions to Sigma_g.
+# Volatile total_mass_fraction values initialize abundances relative to the
+# background gas surface density; they are not added to Sigma_g.
 
 simulation:
   name: mixed_ice_1p1d_example
@@ -36,7 +36,7 @@ star:
   M_star_msun: 1.0
 
 gas:
-  # Fixed H2/He gas disk mass between r_in and r_out.
+  # Initial H2/He gas disk mass between r_in and r_out.
   M_gas_msun: 0.05
 
   # powerlaw or tapered_powerlaw
@@ -60,8 +60,10 @@ gas:
   velocity_mode: viscous
   constant_v_g_cm_s: 0.0
 
-  # update gas surface density
+  # Advect Sigma_g with the prescribed radial gas velocity. This is not the
+  # full viscous diffusion equation.
   update_gas: true
+  Sigma_floor: 1.0e-30
 
 dust:
   carriers:
@@ -100,6 +102,8 @@ dust:
     small: 0.10
 
   phase_partition:
+    # Preserves pebble versus small-grain history. Matrix-associated reservoir
+    # fractions still re-equilibrate according to solid_fractions.
     preserve_carrier_history: true
 
   # Backreaction
@@ -262,3 +266,14 @@ numerics:
   boundary_condition: outflow
   clip_negative: true
   negative_tolerance: 1.0e-40
+
+  # Fail loudly if phase exchange does not conserve CO, CO2, or H2O locally.
+  check_phase_conservation: true
+  phase_conservation_rtol: 1.0e-10
+  phase_conservation_atol: 1.0e-30
+
+# Release output semantics (written automatically to each 1D snapshot):
+#   dM_* / dSigma_*      integrated since the previous saved snapshot
+#   cum_dM_* / cum_dSigma_*  integrated from t=0
+# Reservoir channels are gross positive losses during the phase update.
+# Net gas phase-source terms are stored separately as dM_CO_gas, etc.
