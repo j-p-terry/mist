@@ -2458,7 +2458,7 @@ def _write_table_pair(
     analysis_dir = Path(analysis_dir)
     table.to_csv(analysis_dir / f"{basename}.csv", index=False)
 
-    latex = table.style.to_latex(
+    latex = table.to_latex(
         index=False,
         escape=False,
         na_rep="--",
@@ -2904,7 +2904,7 @@ def analyze_sweep(sweep_dir: Path, analysis_dir: Path) -> None:
     ]
     available_cols = [c for c in table_cols if c in metrics.columns]
     with open(analysis_dir / "sweep_summary_metrics.tex", "w", encoding="utf-8") as f:
-        f.write(metrics[available_cols].style.to_latex(index=False, float_format="%.3g"))
+        f.write(metrics[available_cols].to_latex(index=False, float_format="%.3g"))
 
     ok = metrics[metrics["completed"] == True].copy()
     if ok.empty:
