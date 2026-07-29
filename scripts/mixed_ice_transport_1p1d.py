@@ -44,6 +44,14 @@ previous saved snapshot (``dM_*``/``dSigma_*``), plus output-cadence-independent
 running integrals (``cum_dM_*``/``cum_dSigma_*``). Reservoir-channel release is
 a gross positive loss from that ice reservoir during the phase update; net gas
 phase source terms are stored separately.
+
+Additional runtime diagnostics
+------------------------------
+The model also accumulates inner/outer boundary losses, gross host-capacity
+rejection, capacity-rejected material routed to gas, positivity corrections,
+local phase-conservation errors, timestep statistics, and backreaction strength.
+These quantities are written to diagnostics.csv; per-radius capacity diagnostics
+are also included in the 1D snapshots.
 """
 
 from __future__ import annotations
@@ -159,6 +167,23 @@ def solid_fields_for(carrier: str) -> Tuple[str, ...]:
 SOLID_FIELDS = tuple(field for c in CARRIERS for field in solid_fields_for(c))
 ALL_FIELDS = VAPOR_FIELDS + SOLID_FIELDS
 
+# Molecular species carried by each evolved field. Refractory fields enter
+# carrier and boundary budgets but not volatile-species conservation balances.
+FIELD_TO_SPECIES: Dict[str, str] = {
+    "CO_gas": "CO",
+    "CO2_gas": "CO2",
+    "H2O_gas": "H2O",
+}
+for _carrier in CARRIERS:
+    FIELD_TO_SPECIES[ref_field(_carrier)] = "refractory"
+    FIELD_TO_SPECIES[h2o_field(_carrier)] = "H2O"
+    FIELD_TO_SPECIES[co2_pure_field(_carrier)] = "CO2"
+    FIELD_TO_SPECIES[co2_at_h2o_field(_carrier)] = "CO2"
+    FIELD_TO_SPECIES[co_pure_field(_carrier)] = "CO"
+    FIELD_TO_SPECIES[co_at_co2_field(_carrier)] = "CO"
+    FIELD_TO_SPECIES[co_at_h2o_field(_carrier)] = "CO"
+
+
 FIELD_TO_CARRIER: Dict[str, str] = {}
 FIELD_TO_SURVIVAL_KEY: Dict[str, str] = {}
 for _c in CARRIERS:
@@ -185,7 +210,7 @@ DEFAULTS: Dict[str, Any] = {
     "simulation": {
         "name": "mixed_ice_1p1d",
         "output_dir": "mixed_ice_1p1d_outputs",
-        "t_end_yr": 1.0e5,
+        "t_end_yr": 2.5e5,
         "save_interval_yr": None,
         "save_interval_fraction": 0.01,
         "overwrite": True,
@@ -731,6 +756,7 @@ def _cap_guest_reservoir_to_host(
 def apply_trapping_capacity_limits(
     targets: Dict[str, np.ndarray],
     params: Dict[str, Any],
+    diagnostics: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Enforce finite host-matrix capacity for mixed ice reservoirs.
@@ -762,6 +788,22 @@ def apply_trapping_capacity_limits(
     """
 
     cfg = trapping_capacity_config(params)
+
+    def _record(key: str, value: np.ndarray) -> None:
+        if diagnostics is None:
+            return
+        if key not in diagnostics:
+            diagnostics[key] = np.zeros_like(value, dtype=float)
+        diagnostics[key] += np.maximum(np.asarray(value, dtype=float), 0.0)
+
+    def _capacity_channel(field: str) -> str:
+        if field.startswith("CO2_at_H2O"):
+            return "CO2_at_H2O"
+        if field.startswith("CO_at_CO2"):
+            return "CO_at_CO2"
+        if field.startswith("CO_at_H2O"):
+            return "CO_at_H2O"
+        raise ValueError(f"Unknown capacity-limited guest field {field!r}.")
 
     if not bool(cfg.get("enabled", False)):
         return targets
@@ -954,6 +996,9 @@ def apply_trapping_capacity_limits(
 
         if excess_destination == "gas":
             targets[gas_field] = _positive(gas_field) + excess
+            channel = _capacity_channel(source_field)
+            _record(f"dSigma_capacity_to_gas_{species}", excess)
+            _record(f"dSigma_capacity_to_gas_{channel}", excess)
             return
 
         remaining = excess.copy()
@@ -987,6 +1032,9 @@ def apply_trapping_capacity_limits(
         # Whatever cannot be stored as solid goes to gas.
         if np.any(remaining > 0.0):
             targets[gas_field] = _positive(gas_field) + remaining
+            channel = _capacity_channel(source_field)
+            _record(f"dSigma_capacity_to_gas_{species}", remaining)
+            _record(f"dSigma_capacity_to_gas_{channel}", remaining)
 
     def _cap_guest_reservoir_to_host_local(
         *,
@@ -1016,6 +1064,10 @@ def apply_trapping_capacity_limits(
         excess = np.maximum(guest - guest_new, 0.0)
 
         targets[guest_field] = guest_new
+
+        channel = _capacity_channel(guest_field)
+        _record(f"dSigma_capacity_excess_{channel}", excess)
+        _record(f"dSigma_capacity_excess_{channel}_{carrier}", excess)
 
         _route_excess(
             species=guest_species,
@@ -1103,6 +1155,11 @@ def apply_trapping_capacity_limits(
 
                 targets[co_h2o_field] = co_guest_new
                 targets[co2_h2o_field] = co2_guest_new
+
+                _record("dSigma_capacity_excess_CO_at_H2O", co_excess)
+                _record(f"dSigma_capacity_excess_CO_at_H2O_{carrier}", co_excess)
+                _record("dSigma_capacity_excess_CO2_at_H2O", co2_excess)
+                _record(f"dSigma_capacity_excess_CO2_at_H2O_{carrier}", co2_excess)
 
                 _route_excess(
                     species="CO",
@@ -1569,8 +1626,45 @@ def release_output_fields(
         out[f"Mdot_dlnr_{suffix}"] = rate / dlnr
 
     out["release_interval_yr"] = np.full_like(grid["r"], interval_dt / YR)
-    out["release_semantics_version"] = np.full_like(grid["r"], 2.0)
+    out["release_semantics_version"] = np.full_like(grid["r"], 3.0)
     return out
+
+
+def capacity_output_fields(
+    initial: Dict[str, np.ndarray], cumulative: Dict[str, np.ndarray],
+    grid: Dict[str, np.ndarray], current: Optional[Dict[str, np.ndarray]] = None,
+) -> Dict[str, np.ndarray]:
+    """Build radial snapshot fields for initial, current, and cumulative cap rejection."""
+    out: Dict[str, np.ndarray] = {}
+    groups = [("initial", initial), ("cum", cumulative)]
+    if current is not None:
+        groups.append(("current", current))
+    for prefix, values in groups:
+        for key, arr in values.items():
+            if not key.startswith("dSigma_"):
+                continue
+            arr = np.asarray(arr, dtype=float)
+            out[f"{prefix}_{key}"] = arr.copy()
+            out[f"{prefix}_dM_{key[7:]}"] = grid["area"] * arr
+    return out
+
+
+def accumulate_scalar_diagnostics(total: Dict[str, float], increment: Dict[str, float]) -> None:
+    """Accumulate transport/numerical scalar diagnostics."""
+    for key, value in increment.items():
+        value = float(value)
+        if key.startswith("max_negative_"):
+            total[key] = max(total.get(key, 0.0), value)
+        else:
+            total[key] = total.get(key, 0.0) + value
+
+
+def accumulate_array_diagnostics(total: Dict[str, np.ndarray], increment: Dict[str, np.ndarray]) -> None:
+    for key, value in increment.items():
+        arr = np.asarray(value, dtype=float)
+        if key not in total:
+            total[key] = np.zeros_like(arr)
+        total[key] += arr
 
 
 # -----------------------------
@@ -1581,6 +1675,7 @@ def initialize_state(
     disk: Dict[str, np.ndarray],
     vertical: Dict[str, Any],
     params: Dict[str, Any],
+    capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
     n = len(grid["r"])
     state = {name: np.zeros(n, dtype=np.float64) for name in ALL_FIELDS}
@@ -1624,7 +1719,7 @@ def initialize_state(
         state[name] = np.maximum(state[name], 0.0)
 
     if bool(params["initial_conditions"]["initialize_phase_equilibrium"]):
-        state = set_phase_equilibrium(state, vertical, params)
+        state = set_phase_equilibrium(state, vertical, params, capacity_diagnostics=capacity_diagnostics)
 
     return state
 
@@ -1650,6 +1745,7 @@ def phase_targets(
     state: Dict[str, np.ndarray],
     vertical: Dict[str, Any],
     params: Dict[str, Any],
+    capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
     targets = {name: np.zeros_like(next(iter(state.values()))) for name in ALL_FIELDS}
 
@@ -1697,7 +1793,7 @@ def phase_targets(
         
     targets["H2O_gas"] = np.maximum(H2OT - solid_sum, 0.0)
 
-    targets = apply_trapping_capacity_limits(targets, params)
+    targets = apply_trapping_capacity_limits(targets, params, diagnostics=capacity_diagnostics)
     
     return targets
 
@@ -1705,6 +1801,7 @@ def phase_targets_w_history(
     state: Dict[str, np.ndarray],
     vertical: Dict[str, Any],
     params: Dict[str, Any],
+    capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Carrier-history-preserving phase targets.
@@ -1854,7 +1951,7 @@ def phase_targets_w_history(
 
     targets["H2O_gas"] = np.maximum(H2O_total - H2O_solid_target_sum, 0.0)
     
-    targets = apply_trapping_capacity_limits(targets, params)
+    targets = apply_trapping_capacity_limits(targets, params, diagnostics=capacity_diagnostics)
 
     return targets
 
@@ -1863,68 +1960,81 @@ def set_phase_equilibrium(
     state: Dict[str, np.ndarray],
     vertical: Dict[str, Any],
     params: Dict[str, Any],
+    capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
-    
+    """Set the state to its phase target and optionally record initial cap rejection."""
     if params["dust"]["phase_partition"]["preserve_carrier_history"]:
-        targets = phase_targets_w_history(state, vertical, params)
+        targets = phase_targets_w_history(
+            state, vertical, params, capacity_diagnostics=capacity_diagnostics
+        )
     else:
-        targets = phase_targets(state, vertical, params)
+        targets = phase_targets(
+            state, vertical, params, capacity_diagnostics=capacity_diagnostics
+        )
     for name in ALL_FIELDS:
         state[name] = targets[name]
     return state
-
 
 def phase_relaxation_step(
     state: Dict[str, np.ndarray],
     dt: float,
     vertical: Dict[str, Any],
     params: Dict[str, Any],
-) -> Dict[str, np.ndarray]:
+    return_diagnostics: bool = False,
+):
+    """Relax toward phase targets and return realized capacity rejection if requested."""
     tau = float(params["volatiles"]["phase_relaxation_time_yr"]) * YR
     fac = math.exp(-dt / tau)
-    
+    relax_fraction = 1.0 - fac
+    capacity_target_diag: Dict[str, np.ndarray] = {}
+
     if params["dust"]["phase_partition"]["preserve_carrier_history"]:
-        targets = phase_targets_w_history(state, vertical, params)
+        targets = phase_targets_w_history(
+            state, vertical, params, capacity_diagnostics=capacity_target_diag
+        )
     else:
-        targets = phase_targets(state, vertical, params)
+        targets = phase_targets(
+            state, vertical, params, capacity_diagnostics=capacity_target_diag
+        )
 
     for name in ALL_FIELDS:
         if name.startswith("ref_solid"):
             continue
         state[name] = targets[name] + (state[name] - targets[name]) * fac
 
-    return state
-
+    if not return_diagnostics:
+        return state
+    realized = {key: relax_fraction * value for key, value in capacity_target_diag.items()}
+    return state, realized
 
 def check_phase_conservation(
     before: Dict[str, np.ndarray],
     after: Dict[str, np.ndarray],
     params: Dict[str, Any],
-) -> None:
-    """Verify local conservation of CO, CO2, and H2O in the phase substep."""
-    if not bool(params["numerics"].get("check_phase_conservation", True)):
-        return
-
+) -> Dict[str, float]:
+    """Verify and quantify local molecular-species conservation."""
+    do_check = bool(params["numerics"].get("check_phase_conservation", True))
     rtol = float(params["numerics"].get("phase_conservation_rtol", 1.0e-10))
     atol = float(params["numerics"].get("phase_conservation_atol", 1.0e-30))
-    totals = {
-        "CO": total_CO,
-        "CO2": total_CO2,
-        "H2O": total_H2O,
-    }
+    totals = {"CO": total_CO, "CO2": total_CO2, "H2O": total_H2O}
+    metrics: Dict[str, float] = {}
     for species, func in totals.items():
         b = func(before)
         a = func(after)
         err = np.abs(a - b)
+        scale = np.maximum(np.maximum(np.abs(a), np.abs(b)), atol)
+        rel = err / np.maximum(scale, 1.0e-300)
+        metrics[f"phase_max_abs_error_{species}"] = float(np.nanmax(err))
+        metrics[f"phase_max_rel_error_{species}"] = float(np.nanmax(rel))
         tol = atol + rtol * np.maximum(np.maximum(np.abs(a), np.abs(b)), 1.0e-300)
-        if np.any(err > tol):
-            idx = int(np.nanargmax(err / np.maximum(tol, 1.0e-300)))
+        if do_check and np.any(err > tol):
+            j = int(np.nanargmax(err / np.maximum(tol, 1.0e-300)))
             raise RuntimeError(
-                f"Phase update failed local {species} conservation at radial cell {idx}: "
-                f"before={b[idx]:.8e}, after={a[idx]:.8e}, "
-                f"abs_error={err[idx]:.3e}, tolerance={tol[idx]:.3e}."
+                f"Phase update failed local {species} conservation at radial cell {j}: "
+                f"before={b[j]:.8e}, after={a[j]:.8e}, "
+                f"abs_error={err[j]:.3e}, tolerance={tol[j]:.3e}."
             )
-
+    return metrics
 
 # -----------------------------
 # Finite-volume transport
@@ -1937,28 +2047,27 @@ def interp_edges(arr: np.ndarray) -> np.ndarray:
     return edge
 
 def update_gas_surface_density(
-    disk: Dict[str, np.ndarray],
-    dt: float,
-    grid: Dict[str, np.ndarray],
-    params: Dict[str, Any],
-) -> Dict[str, np.ndarray]:
-
-    Sigma_g_old = disk["Sigma_g"]
-
-    rhs, _ = transport_rhs(
-        Sigma_g_old,
-        disk["v_g"],
-        disk["D_g"],
-        Sigma_g_old,
-        grid,
-        diffusion_on=False,
-    )
-
-    Sigma_g_new = Sigma_g_old + dt * rhs
+    disk: Dict[str, np.ndarray], dt: float, grid: Dict[str, np.ndarray],
+    params: Dict[str, Any], return_diagnostics: bool = False,
+):
+    Sigma_old = disk["Sigma_g"]
+    rhs, flux = transport_rhs(Sigma_old, disk["v_g"], disk["D_g"], Sigma_old, grid, diffusion_on=False)
+    raw = Sigma_old + dt * rhs
     floor = float(params["gas"].get("Sigma_floor", 1.0e-30))
-    disk["Sigma_g"] = np.maximum(Sigma_g_new, floor)
-
-    return disk
+    new = np.maximum(raw, floor)
+    disk["Sigma_g"] = new
+    if not return_diagnostics:
+        return disk
+    inner = max(-2.0 * PI * grid["r_edge"][0] * float(flux[0]), 0.0) * dt
+    outer = max(2.0 * PI * grid["r_edge"][-1] * float(flux[-1]), 0.0) * dt
+    correction = np.maximum(new - raw, 0.0)
+    return disk, {
+        "boundary_inner_gas_disk_g": inner,
+        "boundary_outer_gas_disk_g": outer,
+        "clipped_added_gas_disk_g": float(np.sum(grid["area"] * correction)),
+        "max_negative_gas_disk": max(-float(np.nanmin(raw)), 0.0),
+        "clip_events_gas_disk": float(np.count_nonzero(raw < floor)),
+    }
 
 def refresh_disk_after_sigma_update(
     grid,
@@ -2051,95 +2160,85 @@ def transport_rhs(
 
 
 def compute_timestep(
-    grid: Dict[str, np.ndarray],
-    disk: Dict[str, np.ndarray],
-    carrier_coeff: Dict[str, Dict[str, np.ndarray]],
-    params: Dict[str, Any],
-) -> float:
+    grid: Dict[str, np.ndarray], disk: Dict[str, np.ndarray],
+    carrier_coeff: Dict[str, Dict[str, np.ndarray]], params: Dict[str, Any],
+    return_diagnostics: bool = False,
+):
     num = params["numerics"]
     dr = grid["dr"]
-
     vmax = np.abs(disk["v_g"]).copy()
     for carrier in CARRIERS:
         vmax = np.maximum(vmax, np.abs(carrier_coeff[carrier]["v"]))
-
     mask_v = vmax > 0.0
-    if np.any(mask_v):
-        dt_adv = float(num["cfl_advective"]) * float(np.min(dr[mask_v] / vmax[mask_v]))
-    else:
-        dt_adv = np.inf
-
+    dt_adv = float(num["cfl_advective"]) * float(np.min(dr[mask_v] / vmax[mask_v])) if np.any(mask_v) else np.inf
     Dmax = disk["D_g"].copy()
     for carrier in CARRIERS:
         if bool(params["dust"]["carriers"][carrier]["include_diffusion"]):
             Dmax = np.maximum(Dmax, carrier_coeff[carrier]["D"])
-
     mask_D = Dmax > 0.0
-    if np.any(mask_D):
-        dt_diff = float(num["cfl_diffusive"]) * float(np.min(dr[mask_D] ** 2 / Dmax[mask_D]))
-    else:
-        dt_diff = np.inf
-
+    dt_diff = float(num["cfl_diffusive"]) * float(np.min(dr[mask_D] ** 2 / Dmax[mask_D])) if np.any(mask_D) else np.inf
     dt_max = float(num["max_timestep_yr"]) * YR
-    dt = min(dt_adv, dt_diff, dt_max)
+    candidates = {"advective": dt_adv, "diffusive": dt_diff, "max_timestep": dt_max}
+    limiter = min(candidates, key=candidates.get)
+    dt = candidates[limiter]
     if not np.isfinite(dt) or dt <= 0:
         raise RuntimeError("Computed invalid timestep.")
+    if return_diagnostics:
+        return dt, {"limiter": limiter, "dt_advective_s": dt_adv, "dt_diffusive_s": dt_diff, "dt_max_s": dt_max}
     return dt
 
-
 def transport_step(
-    state: Dict[str, np.ndarray],
-    dt: float,
-    grid: Dict[str, np.ndarray],
-    disk: Dict[str, np.ndarray],
-    carrier_coeff: Dict[str, Dict[str, np.ndarray]],
-    params: Dict[str, Any],
-) -> Dict[str, np.ndarray]:
+    state: Dict[str, np.ndarray], dt: float, grid: Dict[str, np.ndarray],
+    disk: Dict[str, np.ndarray], carrier_coeff: Dict[str, Dict[str, np.ndarray]],
+    params: Dict[str, Any], return_diagnostics: bool = False,
+):
     Sigma_g = disk["Sigma_g"]
-
     new_state = {k: v.copy() for k, v in state.items()}
+    diagnostics: Dict[str, float] = {}
+
+    def add(key: str, value: float) -> None:
+        diagnostics[key] = diagnostics.get(key, 0.0) + float(value)
+
+    def record_flux(field: str, flux: np.ndarray) -> None:
+        inner = max(-2.0 * PI * grid["r_edge"][0] * float(flux[0]), 0.0) * dt
+        outer = max(2.0 * PI * grid["r_edge"][-1] * float(flux[-1]), 0.0) * dt
+        species = FIELD_TO_SPECIES[field]
+        add(f"boundary_inner_{species}_g", inner)
+        add(f"boundary_outer_{species}_g", outer)
+        if field in SOLID_FIELDS:
+            carrier = FIELD_TO_CARRIER[field]
+            add(f"boundary_inner_{carrier}_solids_g", inner)
+            add(f"boundary_outer_{carrier}_solids_g", outer)
 
     vapor_diffusion = bool(params["volatiles"]["include_vapor_diffusion"])
     for name in VAPOR_FIELDS:
-        rhs, _ = transport_rhs(
-            state[name],
-            disk["v_g"],
-            disk["D_g"],
-            Sigma_g,
-            grid,
-            diffusion_on=vapor_diffusion,
-        )
+        rhs, flux = transport_rhs(state[name], disk["v_g"], disk["D_g"], Sigma_g, grid, diffusion_on=vapor_diffusion)
         new_state[name] = state[name] + dt * rhs
-
+        record_flux(name, flux)
     for carrier in CARRIERS:
         diffusion_on = bool(params["dust"]["carriers"][carrier]["include_diffusion"])
         for name in solid_fields_for(carrier):
-            rhs, _ = transport_rhs(
-                state[name],
-                carrier_coeff[carrier]["v"],
-                carrier_coeff[carrier]["D"],
-                Sigma_g,
-                grid,
-                diffusion_on=diffusion_on,
-            )
+            rhs, flux = transport_rhs(state[name], carrier_coeff[carrier]["v"], carrier_coeff[carrier]["D"], Sigma_g, grid, diffusion_on=diffusion_on)
             new_state[name] = state[name] + dt * rhs
+            record_flux(name, flux)
 
     if bool(params["numerics"]["clip_negative"]):
         floor = float(params["numerics"]["surface_density_floor"])
         tol = float(params["numerics"]["negative_tolerance"])
         for name in ALL_FIELDS:
-            arr = new_state[name]
-            minval = float(np.min(arr))
-            if minval < -max(tol, 1.0e-12 * max(1.0, float(np.max(np.abs(arr))))):
-                print(
-                    f"WARNING: clipping negative values in {name}; min={minval:.3e}. "
-                    "Consider reducing CFL or max_timestep.",
-                    file=sys.stderr,
-                )
-            new_state[name] = np.maximum(arr, floor)
-
-    return new_state
-
+            raw = new_state[name]
+            minval = float(np.nanmin(raw))
+            threshold = max(tol, 1.0e-12 * max(1.0, float(np.nanmax(np.abs(raw)))))
+            if minval < -threshold:
+                print(f"WARNING: clipping negative values in {name}; min={minval:.3e}. Consider reducing CFL or max_timestep.", file=sys.stderr)
+            clipped = np.maximum(raw, floor)
+            correction = np.maximum(clipped - raw, 0.0)
+            species = FIELD_TO_SPECIES[name]
+            add(f"clipped_added_{species}_g", float(np.sum(grid["area"] * correction)))
+            add(f"clip_events_{species}", float(np.count_nonzero(raw < floor)))
+            diagnostics[f"max_negative_{species}"] = max(diagnostics.get(f"max_negative_{species}", 0.0), max(-minval, 0.0))
+            new_state[name] = clipped
+    return (new_state, diagnostics) if return_diagnostics else new_state
 
 # -----------------------------
 # Diagnostics and outputs
@@ -2352,289 +2451,282 @@ def write_snapshot_2d(
     np.savez_compressed(path, **data)
 
 
-def initialize_diagnostics(path: Path) -> None:
-    fieldnames = [
-        "snapshot",
-        "step",
-        "time_yr",
-        "dt_yr",
-        "M_gas_msun",
-        "M_gas_fixed_msun",
-        "M_ref_pebble_mearth",
-        "M_ref_small_mearth",
-        "M_CO_total_mearth",
-        "M_CO_gas_mearth",
-        "M_CO_solid_mearth",
-        "M_CO_hidden_mearth",
-        "M_CO_matrix_mearth",
-        "M_CO_pebble_mearth",
-        "M_CO_small_mearth",
-        "M_CO2_total_mearth",
-        "M_CO2_gas_mearth",
-        "M_CO2_solid_mearth",
-        "M_CO2_pebble_mearth",
-        "M_CO2_small_mearth",
-        "M_H2O_total_mearth",
-        "M_H2O_gas_mearth",
-        "M_H2O_solid_mearth",
-        "M_H2O_pebble_mearth",
-        "M_H2O_small_mearth",
-        "min_sigma",
-        "max_sigma",
-        "max_epsilon_pebble",
-        "median_epsilon_pebble",
-        "max_backreaction_X",
-        "median_backreaction_X",
-        "max_backreaction_Y",
-        "median_backreaction_Y",
-        "max_backreaction_A",
-        "median_backreaction_A",
-        "max_backreaction_B",
-        "median_backreaction_B",
-        "min_vr_g",
-        "max_vr_g",
-        "min_pebble_v",
-        "max_pebble_v",
+def diagnostics_fieldnames() -> list[str]:
+    base = [
+        "snapshot", "step", "time_yr", "dt_yr", "M_gas_msun", "M_gas_fixed_msun",
+        "M_ref_pebble_mearth", "M_ref_small_mearth",
+        "M_CO_total_mearth", "M_CO_gas_mearth", "M_CO_solid_mearth", "M_CO_hidden_mearth", "M_CO_matrix_mearth", "M_CO_pebble_mearth", "M_CO_small_mearth",
+        "M_CO2_total_mearth", "M_CO2_gas_mearth", "M_CO2_solid_mearth", "M_CO2_pebble_mearth", "M_CO2_small_mearth",
+        "M_H2O_total_mearth", "M_H2O_gas_mearth", "M_H2O_solid_mearth", "M_H2O_pebble_mearth", "M_H2O_small_mearth",
+        "retained_CO_fraction", "retained_CO2_fraction", "retained_H2O_fraction",
+        "min_sigma", "max_sigma",
+        "max_epsilon_pebble", "median_epsilon_pebble", "mass_weighted_epsilon_pebble",
+        "max_backreaction_X", "median_backreaction_X", "max_backreaction_Y", "median_backreaction_Y",
+        "max_backreaction_A", "median_backreaction_A", "max_backreaction_B", "median_backreaction_B",
+        "min_vr_g", "max_vr_g", "min_pebble_v", "max_pebble_v",
+        "max_rel_delta_v_gas_backreaction", "mass_weighted_rel_delta_v_gas_backreaction",
+        "max_rel_delta_v_pebble_backreaction", "mass_weighted_rel_delta_v_pebble_backreaction",
     ]
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+    for target in ("CO", "CO2", "H2O", "pebble_solids", "small_solids", "gas_disk"):
+        base += [f"cum_boundary_inner_{target}_mearth", f"cum_boundary_outer_{target}_mearth"]
+    for species in ("CO", "CO2", "H2O", "refractory", "gas_disk"):
+        base += [f"cum_clipped_added_{species}_mearth", f"max_negative_{species}", f"clip_events_{species}"]
+    for species in ("CO", "CO2", "H2O"):
+        base += [
+            f"cum_phase_gas_gain_{species}_mearth", f"cum_phase_gas_loss_{species}_mearth", f"cum_phase_gas_net_{species}_mearth",
+            f"phase_cycling_factor_{species}", f"phase_max_abs_error_{species}", f"phase_max_rel_error_{species}",
+            f"mass_balance_residual_{species}_mearth", f"mass_balance_residual_fraction_{species}",
+        ]
+    for channel in ("CO_at_CO2", "CO_at_H2O", "CO2_at_H2O"):
+        base += [
+            f"initial_capacity_excess_{channel}_mearth", f"current_capacity_excess_{channel}_mearth",
+            f"current_capacity_active_cell_fraction_{channel}", f"cum_capacity_excess_{channel}_mearth",
+            f"total_capacity_excess_{channel}_mearth",
+        ]
+    for species in ("CO", "CO2"):
+        base += [
+            f"initial_capacity_to_gas_{species}_mearth", f"current_capacity_to_gas_{species}_mearth",
+            f"cum_capacity_to_gas_{species}_mearth", f"total_capacity_to_gas_{species}_mearth",
+        ]
+    base += ["dt_min_yr", "dt_max_yr", "dt_mean_yr", "n_steps", "n_advective_limited", "n_diffusive_limited", "n_max_timestep_limited", "n_output_limited"]
+    return base
 
+
+def initialize_diagnostics(path: Path) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        csv.DictWriter(f, fieldnames=diagnostics_fieldnames()).writeheader()
 
 def append_diagnostics(
-    path: Path,
-    snap_idx: int,
-    step: int,
-    t: float,
-    dt: float,
-    state: Dict[str, np.ndarray],
-    grid: Dict[str, np.ndarray],
-    disk: Dict[str, np.ndarray],
-    br_diag: Dict[str, np.ndarray],
-    carrier_coeff: Dict[str, np.ndarray],
+    path: Path, snap_idx: int, step: int, t: float, dt: float,
+    state: Dict[str, np.ndarray], grid: Dict[str, np.ndarray], disk: Dict[str, np.ndarray],
+    br_diag: Dict[str, np.ndarray], carrier_coeff: Dict[str, np.ndarray],
+    runtime: Dict[str, Any], release: Dict[str, np.ndarray],
 ) -> None:
     area = grid["area"]
-
-    def mass_field(name: str) -> float:
-        return annulus_integral_sigma(area, state[name])
-
-    def mass_array(arr: np.ndarray) -> float:
-        return annulus_integral_sigma(area, arr)
-
+    mass_field = lambda name: annulus_integral_sigma(area, state[name])
+    mass_array = lambda arr: annulus_integral_sigma(area, arr)
     CO_peb = state[co_pure_field("pebble")] + state[co_at_co2_field("pebble")] + state[co_at_h2o_field("pebble")]
     CO_small = state[co_pure_field("small")] + state[co_at_co2_field("small")] + state[co_at_h2o_field("small")]
     CO_hidden = state[co_at_co2_field("pebble")] + state[co_at_h2o_field("pebble")] + state[co_at_co2_field("small")] + state[co_at_h2o_field("small")]
-
     CO2_peb = state[co2_pure_field("pebble")] + state[co2_at_h2o_field("pebble")]
     CO2_small = state[co2_pure_field("small")] + state[co2_at_h2o_field("small")]
+    H2O_peb, H2O_small = state[h2o_field("pebble")], state[h2o_field("small")]
+    current = {"CO": mass_array(total_CO(state)), "CO2": mass_array(total_CO2(state)), "H2O": mass_array(total_H2O(state))}
+    initial = runtime["initial_mass_g"]
+    scalar = runtime["scalar"]
+    cap_init, cap_cum = runtime["capacity_initial"], runtime["capacity_cumulative"]
+    cap_current = runtime.get("capacity_current", {})
 
-    H2O_peb = state[h2o_field("pebble")]
-    H2O_small = state[h2o_field("small")]
+    def radial_mass(values: Dict[str, np.ndarray], key: str) -> float:
+        return float(np.sum(area * values.get(key, np.zeros_like(area))))
+    def release_mass(key: str) -> float:
+        arr = release.get(key)
+        return float(np.sum(arr)) if arr is not None else 0.0
+    def weighted_mean(values: np.ndarray, weights: np.ndarray) -> float:
+        w = np.maximum(np.asarray(weights, dtype=float), 0.0)
+        return float(np.sum(w * values) / max(float(np.sum(w)), 1.0e-300))
+    def rel_velocity(v: np.ndarray, v0: np.ndarray) -> np.ndarray:
+        floor = max(1.0e-30, 1.0e-12 * float(np.nanmax(np.abs(v0))))
+        return np.abs(v - v0) / np.maximum(np.abs(v0), floor)
 
-    all_min = min(float(np.min(state[k])) for k in ALL_FIELDS)
-    all_max = max(float(np.max(state[k])) for k in ALL_FIELDS)
+    eps_peb = np.asarray(br_diag.get("epsilon_pebble", np.zeros_like(area)), dtype=float)
+    peb_weights = area * carrier_total_solid_sigma(state, "pebble")
+    gas_rel = rel_velocity(disk["v_g"], disk.get("v_g_no_backreaction", disk["v_g"]))
+    peb_rel = rel_velocity(carrier_coeff["pebble"]["v"], carrier_coeff["pebble"].get("v_no_backreaction", carrier_coeff["pebble"]["v"]))
 
-    row = {
-        "snapshot": snap_idx,
-        "step": step,
-        "time_yr": t / YR,
-        "dt_yr": dt / YR,
+    row = {key: 0.0 for key in diagnostics_fieldnames()}
+    row.update({
+        "snapshot": snap_idx, "step": step, "time_yr": t / YR, "dt_yr": dt / YR,
         "M_gas_msun": annulus_integral_sigma(area, disk["Sigma_g"]) / MSUN,
-        # Deprecated compatibility alias; the gas may evolve when update_gas=True.
         "M_gas_fixed_msun": annulus_integral_sigma(area, disk["Sigma_g"]) / MSUN,
         "M_ref_pebble_mearth": mass_field(ref_field("pebble")) / MEARTH,
         "M_ref_small_mearth": mass_field(ref_field("small")) / MEARTH,
-        "M_CO_total_mearth": mass_array(total_CO(state)) / MEARTH,
-        "M_CO_gas_mearth": mass_field("CO_gas") / MEARTH,
-        "M_CO_solid_mearth": mass_array(CO_peb + CO_small) / MEARTH,
-        "M_CO_hidden_mearth": mass_array(CO_hidden) / MEARTH,
-        "M_CO_matrix_mearth": mass_array(CO_hidden) / MEARTH,
-        "M_CO_pebble_mearth": mass_array(CO_peb) / MEARTH,
-        "M_CO_small_mearth": mass_array(CO_small) / MEARTH,
-        "M_CO2_total_mearth": mass_array(total_CO2(state)) / MEARTH,
-        "M_CO2_gas_mearth": mass_field("CO2_gas") / MEARTH,
-        "M_CO2_solid_mearth": mass_array(CO2_peb + CO2_small) / MEARTH,
-        "M_CO2_pebble_mearth": mass_array(CO2_peb) / MEARTH,
-        "M_CO2_small_mearth": mass_array(CO2_small) / MEARTH,
-        "M_H2O_total_mearth": mass_array(total_H2O(state)) / MEARTH,
-        "M_H2O_gas_mearth": mass_field("H2O_gas") / MEARTH,
-        "M_H2O_solid_mearth": mass_array(H2O_peb + H2O_small) / MEARTH,
-        "M_H2O_pebble_mearth": mass_array(H2O_peb) / MEARTH,
-        "M_H2O_small_mearth": mass_array(H2O_small) / MEARTH,
-        "min_sigma": all_min,
-        "max_sigma": all_max,
-        "max_epsilon_pebble": np.nanmax(br_diag.get("epsilon_pebble", [0])),
-        "median_epsilon_pebble": np.nanmedian(br_diag.get("epsilon_pebble", [0])),
-        "max_backreaction_X": np.nanmax(disk.get("backreaction_X", [0])),
-        "median_backreaction_X": np.nanmedian(disk.get("backreaction_X", [0])),
-        "max_backreaction_Y": np.nanmax(disk.get("backreaction_Y", [0])),
-        "median_backreaction_Y": np.nanmedian(disk.get("backreaction_Y", [0])),
-        "max_backreaction_A": np.nanmax(disk.get("backreaction_A", [0])),
-        "median_backreaction_A": np.nanmedian(disk.get("backreaction_A", [0])),
-        "max_backreaction_B": np.nanmax(disk.get("backreaction_B", [0])),
-        "median_backreaction_B": np.nanmedian(disk.get("backreaction_B", [0])),
-        "min_vr_g": np.nanmin(disk["v_g"]),
-        "max_vr_g": np.nanmax(disk["v_g"]),
-        "min_pebble_v": np.nanmin(carrier_coeff["pebble"]["v"]),
-        "max_pebble_v": np.nanmax(carrier_coeff["pebble"]["v"]),
-    }
+        "M_CO_total_mearth": current["CO"] / MEARTH, "M_CO_gas_mearth": mass_field("CO_gas") / MEARTH,
+        "M_CO_solid_mearth": mass_array(CO_peb + CO_small) / MEARTH, "M_CO_hidden_mearth": mass_array(CO_hidden) / MEARTH,
+        "M_CO_matrix_mearth": mass_array(CO_hidden) / MEARTH, "M_CO_pebble_mearth": mass_array(CO_peb) / MEARTH, "M_CO_small_mearth": mass_array(CO_small) / MEARTH,
+        "M_CO2_total_mearth": current["CO2"] / MEARTH, "M_CO2_gas_mearth": mass_field("CO2_gas") / MEARTH,
+        "M_CO2_solid_mearth": mass_array(CO2_peb + CO2_small) / MEARTH, "M_CO2_pebble_mearth": mass_array(CO2_peb) / MEARTH, "M_CO2_small_mearth": mass_array(CO2_small) / MEARTH,
+        "M_H2O_total_mearth": current["H2O"] / MEARTH, "M_H2O_gas_mearth": mass_field("H2O_gas") / MEARTH,
+        "M_H2O_solid_mearth": mass_array(H2O_peb + H2O_small) / MEARTH, "M_H2O_pebble_mearth": mass_array(H2O_peb) / MEARTH, "M_H2O_small_mearth": mass_array(H2O_small) / MEARTH,
+        "retained_CO_fraction": current["CO"] / max(initial["CO"], 1.0e-300), "retained_CO2_fraction": current["CO2"] / max(initial["CO2"], 1.0e-300), "retained_H2O_fraction": current["H2O"] / max(initial["H2O"], 1.0e-300),
+        "min_sigma": min(float(np.min(state[k])) for k in ALL_FIELDS), "max_sigma": max(float(np.max(state[k])) for k in ALL_FIELDS),
+        "max_epsilon_pebble": float(np.nanmax(eps_peb)), "median_epsilon_pebble": float(np.nanmedian(eps_peb)), "mass_weighted_epsilon_pebble": weighted_mean(eps_peb, peb_weights),
+        "max_backreaction_X": float(np.nanmax(disk.get("backreaction_X", [0]))), "median_backreaction_X": float(np.nanmedian(disk.get("backreaction_X", [0]))),
+        "max_backreaction_Y": float(np.nanmax(disk.get("backreaction_Y", [0]))), "median_backreaction_Y": float(np.nanmedian(disk.get("backreaction_Y", [0]))),
+        "max_backreaction_A": float(np.nanmax(disk.get("backreaction_A", [0]))), "median_backreaction_A": float(np.nanmedian(disk.get("backreaction_A", [0]))),
+        "max_backreaction_B": float(np.nanmax(disk.get("backreaction_B", [0]))), "median_backreaction_B": float(np.nanmedian(disk.get("backreaction_B", [0]))),
+        "min_vr_g": float(np.nanmin(disk["v_g"])), "max_vr_g": float(np.nanmax(disk["v_g"])), "min_pebble_v": float(np.nanmin(carrier_coeff["pebble"]["v"])), "max_pebble_v": float(np.nanmax(carrier_coeff["pebble"]["v"])),
+        "max_rel_delta_v_gas_backreaction": float(np.nanmax(gas_rel)), "mass_weighted_rel_delta_v_gas_backreaction": weighted_mean(gas_rel, area * disk["Sigma_g"]),
+        "max_rel_delta_v_pebble_backreaction": float(np.nanmax(peb_rel)), "mass_weighted_rel_delta_v_pebble_backreaction": weighted_mean(peb_rel, peb_weights),
+        "dt_min_yr": (runtime["dt_min_s"] / YR if np.isfinite(runtime["dt_min_s"]) else 0.0), "dt_max_yr": runtime["dt_max_s"] / YR,
+        "dt_mean_yr": (runtime["dt_sum_s"] / max(runtime["n_steps"], 1)) / YR, "n_steps": runtime["n_steps"],
+        "n_advective_limited": runtime["limiter_counts"].get("advective", 0), "n_diffusive_limited": runtime["limiter_counts"].get("diffusive", 0),
+        "n_max_timestep_limited": runtime["limiter_counts"].get("max_timestep", 0), "n_output_limited": runtime["limiter_counts"].get("output", 0),
+    })
+
+    for target in ("CO", "CO2", "H2O", "pebble_solids", "small_solids", "gas_disk"):
+        row[f"cum_boundary_inner_{target}_mearth"] = scalar.get(f"boundary_inner_{target}_g", 0.0) / MEARTH
+        row[f"cum_boundary_outer_{target}_mearth"] = scalar.get(f"boundary_outer_{target}_g", 0.0) / MEARTH
+    for species in ("CO", "CO2", "H2O", "refractory", "gas_disk"):
+        row[f"cum_clipped_added_{species}_mearth"] = scalar.get(f"clipped_added_{species}_g", 0.0) / MEARTH
+        row[f"max_negative_{species}"] = scalar.get(f"max_negative_{species}", 0.0)
+        row[f"clip_events_{species}"] = scalar.get(f"clip_events_{species}", 0.0)
+
+    for species in ("CO", "CO2", "H2O"):
+        gain = release_mass(f"cum_dM_{species}_gas_gain") / MEARTH
+        loss = release_mass(f"cum_dM_{species}_gas_loss") / MEARTH
+        net = release_mass(f"cum_dM_{species}_gas") / MEARTH
+        row[f"cum_phase_gas_gain_{species}_mearth"] = gain
+        row[f"cum_phase_gas_loss_{species}_mearth"] = loss
+        row[f"cum_phase_gas_net_{species}_mearth"] = net
+        row[f"phase_cycling_factor_{species}"] = (gain + loss) / max(abs(net), 1.0e-30)
+        row[f"phase_max_abs_error_{species}"] = runtime["phase_errors"].get(f"phase_max_abs_error_{species}", 0.0)
+        row[f"phase_max_rel_error_{species}"] = runtime["phase_errors"].get(f"phase_max_rel_error_{species}", 0.0)
+        boundary = scalar.get(f"boundary_inner_{species}_g", 0.0) + scalar.get(f"boundary_outer_{species}_g", 0.0)
+        clipped = scalar.get(f"clipped_added_{species}_g", 0.0)
+        residual = current[species] + boundary - initial[species] - clipped
+        row[f"mass_balance_residual_{species}_mearth"] = residual / MEARTH
+        row[f"mass_balance_residual_fraction_{species}"] = residual / max(initial[species], 1.0e-300)
+
+    for channel in ("CO_at_CO2", "CO_at_H2O", "CO2_at_H2O"):
+        key = f"dSigma_capacity_excess_{channel}"
+        mi, mcur, mc = radial_mass(cap_init, key), radial_mass(cap_current, key), radial_mass(cap_cum, key)
+        row[f"initial_capacity_excess_{channel}_mearth"] = mi / MEARTH
+        row[f"current_capacity_excess_{channel}_mearth"] = mcur / MEARTH
+        arr_cur = np.asarray(cap_current.get(key, np.zeros_like(area)), dtype=float)
+        active_threshold = max(1.0e-300, 1.0e-12 * float(np.nanmax(arr_cur)) if np.any(arr_cur > 0.0) else 1.0e-300)
+        row[f"current_capacity_active_cell_fraction_{channel}"] = float(np.mean(arr_cur > active_threshold))
+        row[f"cum_capacity_excess_{channel}_mearth"] = mc / MEARTH
+        row[f"total_capacity_excess_{channel}_mearth"] = (mi + mc) / MEARTH
+    for species in ("CO", "CO2"):
+        key = f"dSigma_capacity_to_gas_{species}"
+        mi, mcur, mc = radial_mass(cap_init, key), radial_mass(cap_current, key), radial_mass(cap_cum, key)
+        row[f"initial_capacity_to_gas_{species}_mearth"] = mi / MEARTH
+        row[f"current_capacity_to_gas_{species}_mearth"] = mcur / MEARTH
+        row[f"cum_capacity_to_gas_{species}_mearth"] = mc / MEARTH
+        row[f"total_capacity_to_gas_{species}_mearth"] = (mi + mc) / MEARTH
 
     with open(path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-        writer.writerow(row)
-
+        csv.DictWriter(f, fieldnames=diagnostics_fieldnames()).writerow(row)
 
 # -----------------------------
 # Main run
 # -----------------------------
 def write_outputs(
-    output_dir: Path,
-    snap_idx: int,
-    step: int,
-    t: float,
-    dt: float,
-    state: Dict[str, np.ndarray],
-    grid: Dict[str, np.ndarray],
-    disk: Dict[str, np.ndarray],
-    carrier_coeff: Dict[str, Dict[str, np.ndarray]],
-    vertical: Dict[str, Any],
-    params: Dict[str, Any],
-    diag_path: Path,
-    release: Dict[str, np.ndarray],
-    br_diag: Dict[str, np.ndarray],
+    output_dir: Path, snap_idx: int, step: int, t: float, dt: float,
+    state: Dict[str, np.ndarray], grid: Dict[str, np.ndarray], disk: Dict[str, np.ndarray],
+    carrier_coeff: Dict[str, Dict[str, np.ndarray]], vertical: Dict[str, Any],
+    params: Dict[str, Any], diag_path: Path, release: Dict[str, np.ndarray],
+    br_diag: Dict[str, np.ndarray], runtime: Dict[str, Any],
 ) -> None:
+    capacity_current: Dict[str, np.ndarray] = {}
+    if params["dust"]["phase_partition"]["preserve_carrier_history"]:
+        phase_targets_w_history(state, vertical, params, capacity_diagnostics=capacity_current)
+    else:
+        phase_targets(state, vertical, params, capacity_diagnostics=capacity_current)
+    runtime["capacity_current"] = capacity_current
+    output_fields = dict(release)
+    output_fields.update(capacity_output_fields(runtime["capacity_initial"], runtime["capacity_cumulative"], grid, current=capacity_current))
     if bool(params["output"]["save_1d_csv"]):
-        write_snapshot_1d(output_dir, snap_idx, t, state, grid, disk, 
-                          carrier_coeff, vertical, release)
-
-    append_diagnostics(diag_path, snap_idx, step, t, dt, state, grid, disk, br_diag, carrier_coeff)
-
+        write_snapshot_1d(output_dir, snap_idx, t, state, grid, disk, carrier_coeff, vertical, output_fields)
+    append_diagnostics(diag_path, snap_idx, step, t, dt, state, grid, disk, br_diag, carrier_coeff, runtime, output_fields)
     if bool(params["output"]["save_2d_npz"]):
         every = int(params["output"]["save_2d_every_n_snapshots"])
         if every <= 1 or snap_idx % every == 0:
             write_snapshot_2d(output_dir, snap_idx, t, state, grid, disk, carrier_coeff, vertical)
 
-
 def run(params: Dict[str, Any]) -> None:
     output_dir = Path(params["simulation"]["output_dir"]).expanduser().resolve()
-    ensure_output_dir(
-        output_dir,
-        overwrite=bool(params["simulation"]["overwrite"]),
-        save_2d=bool(params["output"]["save_2d_npz"]),
-    )
+    ensure_output_dir(output_dir, overwrite=bool(params["simulation"]["overwrite"]), save_2d=bool(params["output"]["save_2d_npz"]))
     write_resolved_params(params, output_dir)
-
     grid = make_grid(params)
     disk = build_fixed_disk(grid, params)
     carrier_coeff = build_carrier_coefficients(grid, disk, params)
     vertical = make_vertical_structure(grid, disk, carrier_coeff, params)
-    state = initialize_state(grid, disk, vertical, params)
+    capacity_initial: Dict[str, np.ndarray] = {}
+    state = initialize_state(grid, disk, vertical, params, capacity_diagnostics=capacity_initial)
 
     t_end = float(params["simulation"]["t_end_yr"]) * YR
-    if params["simulation"]["save_interval_yr"] is None:
-        save_interval = float(params["simulation"]["save_interval_fraction"]) * t_end
-    else:
-        save_interval = float(params["simulation"]["save_interval_yr"]) * YR
+    save_interval = (float(params["simulation"]["save_interval_fraction"]) * t_end if params["simulation"]["save_interval_yr"] is None else float(params["simulation"]["save_interval_yr"]) * YR)
     save_interval = max(save_interval, 1.0e-30)
-
     diag_path = output_dir / "diagnostics.csv"
     initialize_diagnostics(diag_path)
-
     update_gas = bool(params["gas"].get("update_gas", False))
     backreaction = get_backreaction_enabled(params)
 
-    t = 0.0
-    step = 0
-    snap_idx = 0
-    next_save = 0.0
-    last_dt = 0.0
-    release_interval_dt = 0.0
+    area = grid["area"]
+    runtime: Dict[str, Any] = {
+        "initial_mass_g": {"CO": annulus_integral_sigma(area, total_CO(state)), "CO2": annulus_integral_sigma(area, total_CO2(state)), "H2O": annulus_integral_sigma(area, total_H2O(state))},
+        "scalar": {}, "capacity_initial": capacity_initial, "capacity_cumulative": {}, "phase_errors": {},
+        "dt_min_s": np.inf, "dt_max_s": 0.0, "dt_sum_s": 0.0, "n_steps": 0,
+        "limiter_counts": {"advective": 0, "diffusive": 0, "max_timestep": 0, "output": 0},
+    }
+    t = 0.0; step = 0; snap_idx = 0; next_save = 0.0; last_dt = 0.0; release_interval_dt = 0.0
     release_since_output = zero_release_integral(grid)
     release_cumulative = zero_release_integral(grid)
-
     br_diag: Dict[str, np.ndarray] = {}
-    initial_release = release_output_fields(
-        release_since_output, release_cumulative, release_interval_dt, grid
-    )
-    write_outputs(
-        output_dir, snap_idx, step, t, last_dt, state, grid, disk, carrier_coeff,
-        vertical, params, diag_path, initial_release, br_diag,
-    )
-    snap_idx += 1
-    next_save += save_interval
+    initial_release = release_output_fields(release_since_output, release_cumulative, release_interval_dt, grid)
+    write_outputs(output_dir, snap_idx, step, t, last_dt, state, grid, disk, carrier_coeff, vertical, params, diag_path, initial_release, br_diag, runtime)
+    snap_idx += 1; next_save += save_interval
 
     progress_every = int(params["simulation"]["progress_every"])
     gas_mode = "evolving prescribed-inflow" if update_gas else "fixed-surface-density"
     print(f"Writing outputs to: {output_dir}")
     print(f"t_end = {t_end / YR:.6g} yr, save_interval = {save_interval / YR:.6g} yr")
-    print(
-        "1+1D model: radial transport with vertically averaged snow-surface phase terms; "
-        f"{gas_mode} H2/He gas disk."
-    )
+    print("1+1D model: radial transport with vertically averaged snow-surface phase terms; " + f"{gas_mode} H2/He gas disk.")
 
     while t < t_end * (1.0 - 1.0e-14):
-        dt = compute_timestep(grid, disk, carrier_coeff, params)
-        dt = min(dt, t_end - t, next_save - t if next_save > t else dt)
+        raw_dt, dt_info = compute_timestep(grid, disk, carrier_coeff, params, return_diagnostics=True)
+        dt = min(raw_dt, t_end - t, next_save - t if next_save > t else raw_dt)
+        limiter = dt_info["limiter"]
+        if dt < raw_dt * (1.0 - 1.0e-12):
+            limiter = "output"
         if dt <= 0.0:
-            dt = min(compute_timestep(grid, disk, carrier_coeff, params), t_end - t)
+            dt = min(raw_dt, t_end - t)
+        runtime["dt_min_s"] = min(runtime["dt_min_s"], dt)
+        runtime["dt_max_s"] = max(runtime["dt_max_s"], dt)
+        runtime["dt_sum_s"] += dt
+        runtime["n_steps"] += 1
+        runtime["limiter_counts"][limiter] = runtime["limiter_counts"].get(limiter, 0) + 1
 
         br_diag = {}
         if update_gas:
-            # Use current solids to obtain the feedback-modified gas velocity
-            # for this gas advection substep.
             if backreaction:
                 disk = refresh_disk_after_sigma_update(grid, disk, params)
                 carrier_coeff = build_carrier_coefficients(grid, disk, params)
-                disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(
-                    state, disk, carrier_coeff, params
-                )
-            disk = update_gas_surface_density(disk, dt, grid, params)
+                disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(state, disk, carrier_coeff, params)
+            disk, gas_diag = update_gas_surface_density(disk, dt, grid, params, return_diagnostics=True)
+            accumulate_scalar_diagnostics(runtime["scalar"], gas_diag)
 
         disk = refresh_disk_after_sigma_update(grid, disk, params)
         carrier_coeff = build_carrier_coefficients(grid, disk, params)
         if backreaction:
-            disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(
-                state, disk, carrier_coeff, params
-            )
-
+            disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(state, disk, carrier_coeff, params)
         vertical = make_vertical_structure(grid, disk, carrier_coeff, params)
 
-        state = transport_step(state, dt, grid, disk, carrier_coeff, params)
-        state_before_phase = {key: value.copy() for key, value in state.items()}
-        state = phase_relaxation_step(state, dt, vertical, params)
-        check_phase_conservation(state_before_phase, state, params)
+        state, transport_diag = transport_step(state, dt, grid, disk, carrier_coeff, params, return_diagnostics=True)
+        accumulate_scalar_diagnostics(runtime["scalar"], transport_diag)
+        before_phase = {key: value.copy() for key, value in state.items()}
+        state, capacity_step = phase_relaxation_step(state, dt, vertical, params, return_diagnostics=True)
+        phase_errors = check_phase_conservation(before_phase, state, params)
+        for key, value in phase_errors.items():
+            runtime["phase_errors"][key] = max(runtime["phase_errors"].get(key, 0.0), float(value))
+        accumulate_array_diagnostics(runtime["capacity_cumulative"], capacity_step)
 
-        step_release = compute_release(state_before_phase, state, dt, grid)
+        step_release = compute_release(before_phase, state, dt, grid)
         accumulate_release(release_since_output, step_release)
         accumulate_release(release_cumulative, step_release)
         release_interval_dt += dt
-
-        t += dt
-        step += 1
-        last_dt = dt
+        t += dt; step += 1; last_dt = dt
 
         if t >= next_save - 1.0e-9 * save_interval or t >= t_end * (1.0 - 1.0e-14):
-            release_to_write = release_output_fields(
-                release_since_output, release_cumulative, release_interval_dt, grid
-            )
-            write_outputs(
-                output_dir, snap_idx, step, t, last_dt, state, grid, disk,
-                carrier_coeff, vertical, params, diag_path, release_to_write, br_diag,
-            )
-            snap_idx += 1
-            next_save += save_interval
-            release_since_output = zero_release_integral(grid)
-            release_interval_dt = 0.0
+            fields = release_output_fields(release_since_output, release_cumulative, release_interval_dt, grid)
+            write_outputs(output_dir, snap_idx, step, t, last_dt, state, grid, disk, carrier_coeff, vertical, params, diag_path, fields, br_diag, runtime)
+            snap_idx += 1; next_save += save_interval
+            release_since_output = zero_release_integral(grid); release_interval_dt = 0.0
 
         if progress_every > 0 and step % progress_every == 0:
-            print(
-                f"step={step:8d} t={t / YR:12.5e} yr "
-                f"dt={last_dt / YR:10.3e} yr snap={snap_idx - 1}",
-                flush=True,
-            )
-
-    print(f"Done. steps={step}, snapshots={snap_idx}, final time={t / YR:.6g} yr")
-
+            print(f"step={step:8d} t={t / YR:12.5e} yr dt={last_dt / YR:10.3e} yr snap={snap_idx - 1}", flush=True)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

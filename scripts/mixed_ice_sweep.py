@@ -8,7 +8,7 @@ This script does two things:
 
 1. generate
    Takes an existing YAML skeleton as the default, modifies only selected
-   parameters, and writes 18 sweep YAMLs with readable names.
+   parameters, and writes 21 sweep YAMLs with readable names.
 
 2. analyze
    Reads the completed run outputs, extracts compact science metrics, and
@@ -72,6 +72,9 @@ Outputs from analyze
         paper_sensitivity_summary.png
         ice_suite_co_budget_stacked.png
         cumulative_release_profiles_ice_suite.png
+        runtime_process_summary_ice_suite.png
+        current_capacity_saturation_ice_suite.png
+        sweep_numerical_quality.png
 
 Assumptions
 -----------
@@ -1209,6 +1212,52 @@ def analyze_run(row: pd.Series) -> Dict[str, Any]:
     # Backward-compatible alias.
     result["total_CO_release_Mearth"] = result["total_CO_gross_release_Mearth"]
 
+    # Runtime-only diagnostics: boundary loss, capacity rejection, phase
+    # cycling, positivity corrections, and numerical conservation.
+    diag_path = outdir / "diagnostics.csv"
+    if diag_path.exists():
+        diag = pd.read_csv(diag_path)
+        if not diag.empty:
+            last = diag.iloc[-1]
+            runtime_columns = [
+                "retained_CO_fraction", "retained_CO2_fraction", "retained_H2O_fraction",
+                "cum_boundary_inner_CO_mearth", "cum_boundary_outer_CO_mearth",
+                "cum_boundary_inner_CO2_mearth", "cum_boundary_outer_CO2_mearth",
+                "cum_boundary_inner_H2O_mearth", "cum_boundary_outer_H2O_mearth",
+                "cum_boundary_inner_pebble_solids_mearth", "cum_boundary_outer_pebble_solids_mearth",
+                "cum_boundary_inner_small_solids_mearth", "cum_boundary_outer_small_solids_mearth",
+                "initial_capacity_excess_CO_at_CO2_mearth", "current_capacity_excess_CO_at_CO2_mearth", "current_capacity_active_cell_fraction_CO_at_CO2", "cum_capacity_excess_CO_at_CO2_mearth", "total_capacity_excess_CO_at_CO2_mearth",
+                "initial_capacity_excess_CO_at_H2O_mearth", "current_capacity_excess_CO_at_H2O_mearth", "current_capacity_active_cell_fraction_CO_at_H2O", "cum_capacity_excess_CO_at_H2O_mearth", "total_capacity_excess_CO_at_H2O_mearth",
+                "initial_capacity_excess_CO2_at_H2O_mearth", "current_capacity_excess_CO2_at_H2O_mearth", "current_capacity_active_cell_fraction_CO2_at_H2O", "cum_capacity_excess_CO2_at_H2O_mearth", "total_capacity_excess_CO2_at_H2O_mearth",
+                "current_capacity_to_gas_CO_mearth", "current_capacity_to_gas_CO2_mearth", "total_capacity_to_gas_CO_mearth", "total_capacity_to_gas_CO2_mearth",
+                "cum_phase_gas_gain_CO_mearth", "cum_phase_gas_loss_CO_mearth", "cum_phase_gas_net_CO_mearth", "phase_cycling_factor_CO",
+                "cum_phase_gas_gain_CO2_mearth", "cum_phase_gas_loss_CO2_mearth", "cum_phase_gas_net_CO2_mearth", "phase_cycling_factor_CO2",
+                "cum_phase_gas_gain_H2O_mearth", "cum_phase_gas_loss_H2O_mearth", "cum_phase_gas_net_H2O_mearth", "phase_cycling_factor_H2O",
+                "mass_balance_residual_fraction_CO", "mass_balance_residual_fraction_CO2", "mass_balance_residual_fraction_H2O",
+                "cum_clipped_added_CO_mearth", "cum_clipped_added_CO2_mearth", "cum_clipped_added_H2O_mearth",
+                "phase_max_rel_error_CO", "phase_max_rel_error_CO2", "phase_max_rel_error_H2O",
+                "mass_weighted_epsilon_pebble", "max_epsilon_pebble",
+                "mass_weighted_rel_delta_v_gas_backreaction", "mass_weighted_rel_delta_v_pebble_backreaction",
+                "dt_min_yr", "dt_mean_yr", "dt_max_yr", "n_steps",
+            ]
+            for c in runtime_columns:
+                result[c] = float(last[c]) if c in diag.columns else np.nan
+            result["runtime_diagnostics_available"] = True
+            result["cum_boundary_total_CO_mearth"] = result.get("cum_boundary_inner_CO_mearth", 0.0) + result.get("cum_boundary_outer_CO_mearth", 0.0)
+            result["cum_boundary_total_CO2_mearth"] = result.get("cum_boundary_inner_CO2_mearth", 0.0) + result.get("cum_boundary_outer_CO2_mearth", 0.0)
+            result["cum_boundary_total_H2O_mearth"] = result.get("cum_boundary_inner_H2O_mearth", 0.0) + result.get("cum_boundary_outer_H2O_mearth", 0.0)
+            result["total_capacity_excess_CO_mearth"] = result.get("total_capacity_excess_CO_at_CO2_mearth", 0.0) + result.get("total_capacity_excess_CO_at_H2O_mearth", 0.0)
+            result["max_abs_mass_balance_residual_fraction"] = float(np.nanmax(np.abs([
+                result.get("mass_balance_residual_fraction_CO", np.nan),
+                result.get("mass_balance_residual_fraction_CO2", np.nan),
+                result.get("mass_balance_residual_fraction_H2O", np.nan),
+            ])))
+            result["total_clipped_volatile_mearth"] = sum(result.get(f"cum_clipped_added_{sp}_mearth", 0.0) for sp in ("CO", "CO2", "H2O"))
+        else:
+            result["runtime_diagnostics_available"] = False
+    else:
+        result["runtime_diagnostics_available"] = False
+
     return result
 
 
@@ -1646,6 +1695,93 @@ def plot_paper_sensitivity_summary(df: pd.DataFrame, analysis_dir: Path) -> None
     fig.savefig(Path(analysis_dir) / "paper_sensitivity_summary.png", dpi=240)
     plt.close(fig)
     
+def plot_runtime_diagnostic_summary(df: pd.DataFrame, analysis_dir: Path) -> None:
+    """Summarize retention, boundary delivery, capacity throughput, and cycling."""
+    required = "runtime_diagnostics_available"
+    if required not in df.columns:
+        return
+    sub = ordered(df[df[required] == True], ICE_SUITE_NAMES)
+    if sub.empty:
+        return
+    x = np.arange(len(sub))
+    labels = [pretty_run_label(name, multiline=True) for name in sub["run_name"]]
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    width = 0.24
+    for j, (c, label) in enumerate((("retained_CO_fraction", "CO"), ("retained_CO2_fraction", r"CO$_2$"), ("retained_H2O_fraction", r"H$_2$O"))):
+        if c in sub.columns:
+            axes[0, 0].bar(x + (j - 1) * width, sub[c], width=width, label=label)
+    axes[0, 0].set_ylabel("Final / initial inventory"); axes[0, 0].set_title("Volatile retention"); axes[0, 0].legend(); axes[0, 0].set_ylim(bottom=0)
+
+    inner = sub.get("cum_boundary_inner_CO_mearth", pd.Series(np.zeros(len(sub)), index=sub.index)).to_numpy()
+    outer = sub.get("cum_boundary_outer_CO_mearth", pd.Series(np.zeros(len(sub)), index=sub.index)).to_numpy()
+    axes[0, 1].bar(x, inner, label="inner boundary")
+    axes[0, 1].bar(x, outer, bottom=inner, label="outer boundary")
+    axes[0, 1].set_ylabel(r"Cumulative CO loss [$M_\oplus$]"); axes[0, 1].set_title("CO boundary transport"); axes[0, 1].legend()
+
+    bottom = np.zeros(len(sub))
+    cap_cols = (("total_capacity_excess_CO_at_CO2_mearth", r"CO@CO$_2$"), ("total_capacity_excess_CO_at_H2O_mearth", r"CO@H$_2$O"), ("total_capacity_excess_CO2_at_H2O_mearth", r"CO$_2$@H$_2$O"))
+    for c, label in cap_cols:
+        vals = sub.get(c, pd.Series(np.zeros(len(sub)), index=sub.index)).to_numpy()
+        axes[1, 0].bar(x, vals, bottom=bottom, label=label); bottom += vals
+    axes[1, 0].set_yscale("symlog", linthresh=1e-6); axes[1, 0].set_ylabel(r"Gross capacity rejection [$M_\oplus$]")
+    axes[1, 0].set_title("Host-capacity limiter throughput"); axes[1, 0].legend(fontsize=8)
+
+    gain = sub.get("cum_phase_gas_gain_CO_mearth", pd.Series(np.zeros(len(sub)), index=sub.index)).to_numpy()
+    loss = sub.get("cum_phase_gas_loss_CO_mearth", pd.Series(np.zeros(len(sub)), index=sub.index)).to_numpy()
+    axes[1, 1].bar(x - 0.18, gain, width=0.36, label="gas gain")
+    axes[1, 1].bar(x + 0.18, loss, width=0.36, label="gas loss")
+    axes[1, 1].set_yscale("symlog", linthresh=1e-6); axes[1, 1].set_ylabel(r"Cumulative CO phase exchange [$M_\oplus$]")
+    axes[1, 1].set_title("Gross CO phase cycling"); axes[1, 1].legend()
+
+    for ax in axes.flat:
+        ax.set_xticks(x); ax.set_xticklabels(labels, rotation=25, ha="right"); ax.grid(True, axis="y", alpha=0.25)
+    fig.tight_layout(); fig.savefig(analysis_dir / "runtime_process_summary_ice_suite.png", dpi=220); plt.close(fig)
+
+    # Current (non-cumulative) cap activity is easier to interpret than gross
+    # throughput when assessing where the final target is capacity limited.
+    current_cols = [
+        "current_capacity_excess_CO_at_CO2_mearth",
+        "current_capacity_excess_CO_at_H2O_mearth",
+        "current_capacity_excess_CO2_at_H2O_mearth",
+    ]
+    if any(c in sub.columns for c in current_cols):
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+        width2 = 0.24
+        labels2 = [r"CO@CO$_2$", r"CO@H$_2$O", r"CO$_2$@H$_2$O"]
+        active_cols = [
+            "current_capacity_active_cell_fraction_CO_at_CO2",
+            "current_capacity_active_cell_fraction_CO_at_H2O",
+            "current_capacity_active_cell_fraction_CO2_at_H2O",
+        ]
+        for j, (c, ac, label) in enumerate(zip(current_cols, active_cols, labels2)):
+            vals = sub.get(c, pd.Series(np.zeros(len(sub)), index=sub.index)).to_numpy()
+            active = sub.get(ac, pd.Series(np.zeros(len(sub)), index=sub.index)).to_numpy()
+            axes[0].bar(x + (j - 1) * width2, vals, width=width2, label=label)
+            axes[1].plot(x, active, marker="o", label=label)
+        axes[0].set_ylabel("Current rejected target mass [Earth masses]")
+        axes[0].set_title("Capacity-limited target at final time")
+        axes[1].set_ylabel("Fraction of radial cells with active cap")
+        axes[1].set_ylim(-0.02, 1.02); axes[1].set_title("Radial extent of active capacity limits")
+        for ax in axes:
+            ax.set_xticks(x); ax.set_xticklabels(labels, rotation=25, ha="right"); ax.grid(True, axis="y", alpha=0.25); ax.legend(fontsize=8)
+        fig.tight_layout(); fig.savefig(analysis_dir / "current_capacity_saturation_ice_suite.png", dpi=220); plt.close(fig)
+
+    # All-run numerical quality check.
+    allsub = df[df[required] == True].copy()
+    if not allsub.empty and "max_abs_mass_balance_residual_fraction" in allsub.columns:
+        allsub = allsub.sort_values("max_abs_mass_balance_residual_fraction")
+        y = np.arange(len(allsub))
+        fig, axes = plt.subplots(1, 2, figsize=(12, max(5.0, 0.34 * len(allsub))))
+        axes[0].barh(y, np.maximum(np.abs(allsub["max_abs_mass_balance_residual_fraction"]), 1e-30))
+        axes[0].set_xscale("log"); axes[0].set_xlabel("Maximum absolute mass-balance residual fraction"); axes[0].set_yticks(y); axes[0].set_yticklabels([pretty_run_label(n) for n in allsub["run_name"]], fontsize=8)
+        if "total_clipped_volatile_mearth" in allsub.columns:
+            axes[1].barh(y, np.maximum(allsub["total_clipped_volatile_mearth"], 1e-30))
+            axes[1].set_xscale("log"); axes[1].set_xlabel(r"Cumulative clipped volatile mass [$M_\oplus$]"); axes[1].set_yticks(y); axes[1].set_yticklabels([])
+        for ax in axes: ax.grid(True, axis="x", which="both", alpha=0.25)
+        fig.tight_layout(); fig.savefig(analysis_dir / "sweep_numerical_quality.png", dpi=220); plt.close(fig)
+
+
 def plot_ice_release(df: pd.DataFrame, analysis_dir: Path) -> None:
     """Standalone paper-ready R50 gross-loss-radius summary for the ice suite."""
     names = ICE_SUITE_NAMES
@@ -1815,6 +1951,12 @@ def plot_freezeout(df: pd.DataFrame, analysis_dir: Path) -> None:
         "B_CO_global_vs_classical_freezeout",
         "model_global_gas_CO_fraction",
         "classical_global_gas_CO_fraction",
+        "retained_CO_fraction",
+        "cum_boundary_inner_CO_mearth",
+        "cum_boundary_outer_CO_mearth",
+        "total_capacity_excess_CO_mearth",
+        "phase_cycling_factor_CO",
+        "max_abs_mass_balance_residual_fraction",
     ]
 
     if not all(c in df.columns for c in required):
@@ -2316,7 +2458,7 @@ def _write_table_pair(
     analysis_dir = Path(analysis_dir)
     table.to_csv(analysis_dir / f"{basename}.csv", index=False)
 
-    latex = table.to_latex(
+    latex = table.style.to_latex(
         index=False,
         escape=False,
         na_rep="--",
@@ -2698,6 +2840,9 @@ def write_key_results(metrics: pd.DataFrame, analysis_dir: Path) -> None:
             f"- Global small-grain C/O: {row['global_C_over_O_small']:.3f}",
             f"- Small-grain fraction of solid volatile ice: {row['global_small_fraction_solid_volatile']:.3f}",
             f"- R50 release radii [au]: pure CO={row['R50_CO_pure']:.3g}, CO@CO2={row['R50_CO_at_CO2']:.3g}, CO@H2O={row['R50_CO_at_H2O']:.3g}",
+            *([f"- Retained CO fraction: {row['retained_CO_fraction']:.4f}"] if pd.notna(row.get('retained_CO_fraction', np.nan)) else []),
+            *([f"- Cumulative inner-boundary CO delivery: {row['cum_boundary_inner_CO_mearth']:.3e} M_Earth"] if pd.notna(row.get('cum_boundary_inner_CO_mearth', np.nan)) else []),
+            *([f"- CO phase cycling factor: {row['phase_cycling_factor_CO']:.3g}"] if pd.notna(row.get('phase_cycling_factor_CO', np.nan)) else []),
             "",
         ]
 
@@ -2781,6 +2926,9 @@ def analyze_sweep(sweep_dir: Path, analysis_dir: Path) -> None:
     plot_paper_sensitivity_summary(ok, analysis_dir)
     plot_final_co_budget_stacked(ok, analysis_dir)
     plot_ice_release(ok, analysis_dir)
+
+    ### runtime/process diagnostics ####
+    plot_runtime_diagnostic_summary(ok, analysis_dir)
 
     ### additional diagnostics / appendix ####
     plot_ice_partitioning(ok, analysis_dir)

@@ -19,6 +19,14 @@ This script reads:
 It makes:
     diagnostics_masses.png
     diagnostics_fractions.png
+    diagnostics_boundary_losses.png
+    diagnostics_phase_exchange.png
+    diagnostics_capacity_limiting.png
+    diagnostics_numerical_quality.png
+    diagnostics_timestep.png
+    diagnostics_backreaction_strength.png  [when applicable]
+    capacity_rejection_profile.png
+    co_phase_exchange_profile.png
     final_volatile_profiles.png
     final_carrier_profiles.png
     final_c_o_profiles.png
@@ -230,49 +238,119 @@ def read_2d_snapshot(path: Path) -> Dict[str, np.ndarray]:
 # Diagnostics plots
 # -----------------------------
 def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> None:
+    """Plot global inventories plus runtime-only transport/phase diagnostics."""
     if diag is None or diag.empty or "time_yr" not in diag.columns:
         return
+    t = diag["time_yr"].to_numpy(dtype=float)
 
     mass_cols = [
         "M_CO_total_mearth", "M_CO_gas_mearth", "M_CO_solid_mearth", "M_CO_hidden_mearth",
         "M_CO2_total_mearth", "M_CO2_gas_mearth", "M_CO2_solid_mearth",
         "M_H2O_total_mearth", "M_H2O_gas_mearth", "M_H2O_solid_mearth",
     ]
-    mass_labels = [
-        "CO total", "CO gas", "CO solid", "CO hidden",
-        "CO2 total", "CO2 gas", "CO2 solid",
-        "H2O total", "H2O gas", "H2O solid",
-    ]
-
+    mass_labels = ["CO total", "CO gas", "CO solid", "CO matrix", "CO2 total", "CO2 gas", "CO2 solid", "H2O total", "H2O gas", "H2O solid"]
     plt.figure(figsize=(9, 5))
-    this_color_list = color_list[:]
-    for i, (col, label) in enumerate(zip(mass_cols, mass_labels)):
-        if col in diag.columns:
-            this_color_list = get_color_list(this_color_list, i)
-            plt.plot(diag["time_yr"], np.maximum(diag[col], EPS), label=label, color=this_color_list[i])
-    plt.yscale("log")
-    plt.xlabel("Time [yr]")
-    plt.ylabel("Mass [Earth masses]")
-    plt.title("Global volatile inventories")
-    plt.legend(ncols=2, fontsize=8)
-    plt.grid(True, which="both", alpha=0.3)
-    savefig(f"{analysis_dir}/diagnostics_masses.png")
+    this_colors = color_list[:]
+    for i, (colname, label) in enumerate(zip(mass_cols, mass_labels)):
+        if colname in diag.columns:
+            this_colors = get_color_list(this_colors, i)
+            plt.plot(t, np.maximum(diag[colname], EPS), label=label, color=this_colors[i])
+    plt.yscale("log"); plt.xlabel("Time [yr]"); plt.ylabel("Mass [Earth masses]"); plt.title("Global volatile inventories")
+    plt.legend(ncols=2, fontsize=8); plt.grid(True, which="both", alpha=0.3)
+    savefig(Path(analysis_dir) / "diagnostics_masses.png")
 
     if has_columns(diag, ["M_CO_total_mearth", "M_CO_gas_mearth", "M_CO_hidden_mearth"]):
         total = np.maximum(diag["M_CO_total_mearth"].to_numpy(), EPS)
         plt.figure(figsize=(8, 5))
-        plt.plot(diag["time_yr"], diag["M_CO_gas_mearth"] / total, label="CO gas / total CO", color=color_list[0])
-        plt.plot(diag["time_yr"], diag["M_CO_hidden_mearth"] / total, label="matrix-associated CO / total CO", color=color_list[1])
+        plt.plot(t, diag["M_CO_gas_mearth"] / total, label="CO gas / total CO", color=color_list[0])
+        plt.plot(t, diag["M_CO_hidden_mearth"] / total, label="matrix-associated CO / total CO", color=color_list[1])
         if "M_CO_solid_mearth" in diag.columns:
-            plt.plot(diag["time_yr"], diag["M_CO_solid_mearth"] / total, label="solid CO / total CO", color=color_list[2])
-        plt.xlabel("Time [yr]")
-        plt.ylabel("Fraction")
-        plt.ylim(-0.02, 1.02)
-        plt.title("Global CO partitioning")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        savefig(f"{analysis_dir}/diagnostics_fractions.png")
+            plt.plot(t, diag["M_CO_solid_mearth"] / total, label="solid CO / total CO", color=color_list[2])
+        plt.xlabel("Time [yr]"); plt.ylabel("Fraction"); plt.ylim(-0.02, 1.02); plt.title("Global CO partitioning")
+        plt.legend(); plt.grid(True, alpha=0.3)
+        savefig(Path(analysis_dir) / "diagnostics_fractions.png")
 
+    # Cumulative boundary losses distinguish inward delivery from outer-domain loss.
+    boundary_cols = [f"cum_boundary_{side}_{sp}_mearth" for side in ("inner", "outer") for sp in ("CO", "CO2", "H2O")]
+    if any(c in diag.columns for c in boundary_cols):
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharey=True)
+        for ax, side, title in zip(axes, ("inner", "outer"), ("Inner-boundary delivery", "Outer-boundary loss")):
+            for i, sp in enumerate(("CO", "CO2", "H2O")):
+                c = f"cum_boundary_{side}_{sp}_mearth"
+                if c in diag.columns:
+                    ax.plot(t, diag[c], label=sp, color=color_list[i])
+            ax.set_title(title); ax.set_xlabel("Time [yr]"); ax.grid(True, alpha=0.25); ax.legend()
+        axes[0].set_ylabel("Cumulative mass [Earth masses]")
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_boundary_losses.png", dpi=220); plt.close(fig)
+
+    # Sign-separated gas phase exchange shows gross cycling versus net production.
+    if any(f"cum_phase_gas_gain_{sp}_mearth" in diag.columns for sp in ("CO", "CO2", "H2O")):
+        fig, axes = plt.subplots(1, 3, figsize=(14, 4.2), sharex=True)
+        for ax, sp in zip(axes, ("CO", "CO2", "H2O")):
+            for suffix, label, ls in (("gain", "positive gas gain", "-"), ("loss", "gas loss to solids", "--"), ("net", "net phase source", ":")):
+                c = f"cum_phase_gas_{suffix}_{sp}_mearth"
+                if c in diag.columns:
+                    ax.plot(t, diag[c], label=label, linestyle=ls)
+            ax.axhline(0.0, color="0.5", linewidth=0.8); ax.set_title(sp); ax.set_xlabel("Time [yr]"); ax.grid(True, alpha=0.25)
+        axes[0].set_ylabel("Cumulative phase exchange [Earth masses]"); axes[-1].legend(fontsize=8)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_phase_exchange.png", dpi=220); plt.close(fig)
+
+    # Host-capacity diagnostics: instantaneous target rejection and gross throughput.
+    cap_channels = ("CO_at_CO2", "CO_at_H2O", "CO2_at_H2O")
+    if any(f"total_capacity_excess_{ch}_mearth" in diag.columns for ch in cap_channels):
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+        labels = {"CO_at_CO2": r"CO@CO$_2$", "CO_at_H2O": r"CO@H$_2$O", "CO2_at_H2O": r"CO$_2$@H$_2$O"}
+        for i, ch in enumerate(cap_channels):
+            ccur = f"current_capacity_excess_{ch}_mearth"
+            ctot = f"total_capacity_excess_{ch}_mearth"
+            if ccur in diag.columns: axes[0].plot(t, diag[ccur], label=labels[ch], color=color_list[i])
+            if ctot in diag.columns: axes[1].plot(t, diag[ctot], label=labels[ch], color=color_list[i])
+        for i, sp in enumerate(("CO", "CO2")):
+            c = f"total_capacity_to_gas_{sp}_mearth"
+            if c in diag.columns: axes[2].plot(t, diag[c], label=sp, color=color_list[i])
+        axes[0].set_title("Current target rejected by host caps"); axes[0].set_ylabel("Instantaneous target excess [Earth masses]")
+        axes[1].set_title("Gross guest rejected by host caps"); axes[1].set_ylabel("Cumulative gross throughput [Earth masses]")
+        axes[2].set_title("Capacity-rejected material sent to gas"); axes[2].set_ylabel("Cumulative gross throughput [Earth masses]")
+        for ax in axes:
+            ax.set_xlabel("Time [yr]"); ax.grid(True, alpha=0.25); ax.legend(fontsize=8)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_capacity_limiting.png", dpi=220); plt.close(fig)
+
+    # Numerical mass balance and positivity corrections.
+    residual_cols = [f"mass_balance_residual_fraction_{sp}" for sp in ("CO", "CO2", "H2O")]
+    clip_cols = [f"cum_clipped_added_{sp}_mearth" for sp in ("CO", "CO2", "H2O")]
+    if any(c in diag.columns for c in residual_cols + clip_cols):
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+        for i, sp in enumerate(("CO", "CO2", "H2O")):
+            rc = f"mass_balance_residual_fraction_{sp}"
+            cc = f"cum_clipped_added_{sp}_mearth"
+            if rc in diag.columns: axes[0].plot(t, diag[rc], label=sp, color=color_list[i])
+            if cc in diag.columns: axes[1].plot(t, np.maximum(diag[cc], 1e-30), label=sp, color=color_list[i])
+        axes[0].axhline(0.0, color="0.5", linewidth=0.8); axes[0].set_title("Species mass-balance residual"); axes[0].set_ylabel(r"$(M+M_{out}-M_0-M_{clip})/M_0$")
+        axes[1].set_yscale("log"); axes[1].set_title("Cumulative positivity correction"); axes[1].set_ylabel("Added mass [Earth masses]")
+        for ax in axes: ax.set_xlabel("Time [yr]"); ax.grid(True, which="both", alpha=0.25); ax.legend()
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_numerical_quality.png", dpi=220); plt.close(fig)
+
+    if has_columns(diag, ["dt_min_yr", "dt_mean_yr", "dt_max_yr"]):
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+        axes[0].plot(t, diag["dt_min_yr"], label="minimum"); axes[0].plot(t, diag["dt_mean_yr"], label="mean"); axes[0].plot(t, diag["dt_max_yr"], label="maximum")
+        axes[0].set_yscale("log"); axes[0].set_ylabel("Timestep [yr]"); axes[0].legend(); axes[0].set_title("Timestep statistics")
+        for c, label in (("n_advective_limited", "advective"), ("n_diffusive_limited", "diffusive"), ("n_max_timestep_limited", "maximum dt"), ("n_output_limited", "output/end")):
+            if c in diag.columns: axes[1].plot(t, diag[c], label=label)
+        axes[1].set_ylabel("Cumulative step count"); axes[1].set_title("Timestep limiter") ; axes[1].legend(fontsize=8)
+        for ax in axes: ax.set_xlabel("Time [yr]"); ax.grid(True, which="both", alpha=0.25)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_timestep.png", dpi=220); plt.close(fig)
+
+    br_cols = ["mass_weighted_epsilon_pebble", "mass_weighted_rel_delta_v_gas_backreaction", "mass_weighted_rel_delta_v_pebble_backreaction"]
+    if any(c in diag.columns and np.nanmax(np.abs(diag[c])) > 0 for c in br_cols):
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+        if "mass_weighted_epsilon_pebble" in diag.columns:
+            axes[0].plot(t, diag["mass_weighted_epsilon_pebble"], label="mass-weighted"); axes[0].plot(t, diag.get("max_epsilon_pebble", 0), label="maximum", linestyle="--")
+        axes[0].set_title("Pebble loading"); axes[0].set_ylabel(r"$\epsilon_{\rm peb}$"); axes[0].legend()
+        for c, label in (("mass_weighted_rel_delta_v_gas_backreaction", "gas"), ("mass_weighted_rel_delta_v_pebble_backreaction", "pebbles")):
+            if c in diag.columns: axes[1].plot(t, diag[c], label=label)
+        axes[1].set_title("Backreaction velocity modification"); axes[1].set_ylabel(r"mass-weighted $|v-v_0|/|v_0|$"); axes[1].legend()
+        for ax in axes: ax.set_xlabel("Time [yr]"); ax.grid(True, alpha=0.25)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_backreaction_strength.png", dpi=220); plt.close(fig)
 
 def _zero_like_any(data):
     """Return a zero array with the same shape as the first ndarray in data."""
@@ -2298,6 +2376,39 @@ def make_paper_2d_morphology(
     fig.savefig(Path(analysis_dir) / "paper_fiducial_morphology.png", dpi=240)
     plt.close(fig)
 
+def make_runtime_profile_plots(df: pd.DataFrame, analysis_dir: Path) -> None:
+    """Plot radial distributions of runtime-only cumulative diagnostics."""
+    if "r_au" not in df.columns:
+        return
+    r = df["r_au"].to_numpy(dtype=float)
+    dlnr = _dlnr_from_centers(r)
+    cap_channels = [("CO_at_CO2", r"CO@CO$_2$"), ("CO_at_H2O", r"CO@H$_2$O"), ("CO2_at_H2O", r"CO$_2$@H$_2$O")]
+    if any(f"cum_dM_capacity_excess_{ch}" in df.columns or f"current_dM_capacity_excess_{ch}" in df.columns for ch, _ in cap_channels):
+        fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.8), sharex=True)
+        for i, (ch, label) in enumerate(cap_channels):
+            current = df.get(f"current_dM_capacity_excess_{ch}", pd.Series(np.zeros_like(r))).to_numpy(dtype=float)
+            gross = np.zeros_like(r)
+            for prefix in ("initial", "cum"):
+                c = f"{prefix}_dM_capacity_excess_{ch}"
+                if c in df.columns: gross += df[c].to_numpy(dtype=float)
+            axes[0].semilogx(r, current / np.maximum(dlnr, EPS) / MEARTH, label=label, color=color_list[i])
+            axes[1].semilogx(r, gross / np.maximum(dlnr, EPS) / MEARTH, label=label, color=color_list[i])
+        axes[0].set_title("Current capacity-limited target"); axes[0].set_ylabel(r"$dM_{\rm cap,reject}/d\ln r$ [$M_\oplus$]")
+        axes[1].set_title("Cumulative gross capacity rejection"); axes[1].set_ylabel(r"$dM_{\rm cap,reject}^{\rm gross}/d\ln r$ [$M_\oplus$]")
+        for ax in axes:
+            ax.set_xlabel("Radius [au]"); ax.legend(fontsize=8); ax.grid(True, which="both", alpha=0.25)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "capacity_rejection_profile.png", dpi=220); plt.close(fig)
+
+    needed = ["cum_dM_CO_gas_gain", "cum_dM_CO_gas_loss", "cum_dM_CO_gas"]
+    if any(c in df.columns for c in needed):
+        fig, ax = plt.subplots(figsize=(8.6, 4.8))
+        for c, label, ls in (("cum_dM_CO_gas_gain", "positive gas gain", "-"), ("cum_dM_CO_gas_loss", "gas loss to solids", "--"), ("cum_dM_CO_gas", "net phase source", ":")):
+            if c in df.columns: ax.semilogx(r, df[c].to_numpy(dtype=float) / np.maximum(dlnr, EPS) / MEARTH, label=label, linestyle=ls, linewidth=2)
+        ax.axhline(0.0, color="0.5", linewidth=0.8); ax.set_xlabel("Radius [au]"); ax.set_ylabel(r"$dM_{\rm CO,phase}^{\rm cum}/d\ln r$ [$M_\oplus$]")
+        ax.set_title("Cumulative CO phase exchange"); ax.legend(); ax.grid(True, which="both", alpha=0.25)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "co_phase_exchange_profile.png", dpi=220); plt.close(fig)
+
+
 # -----------------------------
 # Summary metrics
 # -----------------------------
@@ -2346,6 +2457,25 @@ def write_summary_metrics(
             hidden = float(diag["M_CO_hidden_mearth"].iloc[-1])
             add("final_global_hidden_CO_fraction", hidden / total, "Final global hidden-CO fraction.")
 
+    if diag is not None and not diag.empty:
+        last = diag.iloc[-1]
+        extra_cols = [
+            "retained_CO_fraction", "retained_CO2_fraction", "retained_H2O_fraction",
+            "cum_boundary_inner_CO_mearth", "cum_boundary_outer_CO_mearth",
+            "current_capacity_excess_CO_at_CO2_mearth", "current_capacity_excess_CO_at_H2O_mearth", "current_capacity_excess_CO2_at_H2O_mearth",
+            "current_capacity_active_cell_fraction_CO_at_CO2", "current_capacity_active_cell_fraction_CO_at_H2O", "current_capacity_active_cell_fraction_CO2_at_H2O",
+            "total_capacity_excess_CO_at_CO2_mearth", "total_capacity_excess_CO_at_H2O_mearth", "total_capacity_excess_CO2_at_H2O_mearth",
+            "current_capacity_to_gas_CO_mearth", "total_capacity_to_gas_CO_mearth", "phase_cycling_factor_CO",
+            "cum_phase_gas_gain_CO_mearth", "cum_phase_gas_loss_CO_mearth", "cum_phase_gas_net_CO_mearth",
+            "mass_balance_residual_fraction_CO", "mass_balance_residual_fraction_CO2", "mass_balance_residual_fraction_H2O",
+            "cum_clipped_added_CO_mearth", "cum_clipped_added_CO2_mearth", "cum_clipped_added_H2O_mearth",
+            "mass_weighted_epsilon_pebble", "mass_weighted_rel_delta_v_pebble_backreaction",
+            "dt_min_yr", "dt_mean_yr", "dt_max_yr", "n_steps",
+        ]
+        for colname in extra_cols:
+            if colname in diag.columns:
+                add(f"final_{colname}", float(last[colname]), f"Final runtime diagnostic: {colname}.")
+
     with open(outpath, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["metric", "value", "description"])
         writer.writeheader()
@@ -2387,6 +2517,7 @@ def main() -> None:
     ### additional diagnostics / appendix ####
     make_diagnostics_plots(diag, analysis_dir)
     make_final_1d_plots(selected_df, analysis_dir, selected.index, plot_entrap_surface=bool(args.plot_entrap_surfaces))
+    make_runtime_profile_plots(selected_df, analysis_dir)
 
     if len(snapshots) > args.max_time_radius_snaps:
         indices = np.linspace(0, len(snapshots) - 1, args.max_time_radius_snaps).astype(int)
