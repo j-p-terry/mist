@@ -1941,7 +1941,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         metallicity,
         "Local solid-to-gas ratio",
         r"$\Sigma_{\rm solid}/\Sigma_{\rm gas}$",
-        Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
+        Path(f"{analysis_dir}/metallicity.png"),
         log_value=True,
         overlay=None,
         vmin=1e-3,
