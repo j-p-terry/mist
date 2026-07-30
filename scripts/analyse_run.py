@@ -187,6 +187,10 @@ def select_snapshot(snapshots: Sequence[SnapshotInfo], selector: str) -> Snapsho
         return snapshots[-1]
     if selector == "first":
         return snapshots[0]
+    if selector == "quarter":
+        return snapshots[len(snapshots) // 4]
+    if selector == "3quarter":
+        return snapshots[3 * len(snapshots) // 4]
     if selector == "middle":
         return snapshots[len(snapshots) // 2]
     idx = int(selector)
@@ -2489,7 +2493,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analyze mixed_ice_transport_1p1d outputs.")
     parser.add_argument("output_dir", type=str, help="Run output directory from mixed_ice_transport_1p1d.py.")
     parser.add_argument("--analysis-dir", type=str, default=None, help="Plot output directory. Default: <output_dir>/analysis_plots")
-    parser.add_argument("--snap", type=str, default="latest", help="Snapshot: latest, first, middle, or integer index.")
+    parser.add_argument("--snap", type=str, default="latest", help="Snapshot: latest, first, quarter, middle, 3quarter, or integer index.")
     parser.add_argument("--max-time-radius-snaps", type=int, default=200, help="Maximum snapshots used for time-radius plots.")
     parser.add_argument("--plot_entrap_surfaces", type=int, default=0, help="Plot entrapped snow surfaces.")
     parser.add_argument("--skip-2d", action="store_true", help="Skip all 2D NPZ analysis even when files exist.")
@@ -2499,7 +2503,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir).expanduser().resolve()
-    analysis_dir = Path(args.analysis_dir).expanduser().resolve() if args.analysis_dir else output_dir / "analysis_plots"
+    analysis_dir = Path(args.analysis_dir).expanduser().resolve() if args.analysis_dir else output_dir / "analysis_plots" / f"snap_{args.snap}"
     ensure_dir(analysis_dir)
 
     snapshots = list_snapshots(output_dir)
