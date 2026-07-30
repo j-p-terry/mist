@@ -382,7 +382,6 @@ def _sum_fields(data, keys, missing="zero"):
     return out
 
 #### Volatile budgets #####
-
 def compute_volatile_budgets(data, collapse_vertical=False):
     """
     Compute volatile budgets from a 1+1D mixed-ice snapshot dictionary.
@@ -876,7 +875,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
         i = 0
         this_color_list = color_list[:]
         plt.figure(figsize=(9, 5))
-        # breakpoint()
+
         for col in snow_cols:
             this_color_list = get_color_list(this_color_list, i)
             label = col.replace("snow_surface_z_over_r_", "")
@@ -994,6 +993,30 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.legend()
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/co_trapping_capacity_mol_ratio.png")
+    
+    if "backreaction_A" in df:
+        plt.figure(figsize=(9, 5))
+        plt.semilogx(r, df["backreaction_A"], label=r"$\mathcal{A}$", color=color_list[0])
+        plt.semilogx(r, df["backreaction_B"], label=r"$\mathcal{B}$", color=color_list[1])
+        plt.axhline(1.0, color="k", lw=1, ls="--")
+        plt.xlabel("Radius [au]")
+        plt.ylabel("Backreaction coefficient")
+        plt.title(f"Backreaction Coefficients")#, snapshot {snap_index}")
+        plt.legend()
+        plt.grid(True, which="both", alpha=0.3)
+        savefig(f"{analysis_dir}/backreact_coeffs.png")
+        
+    if "epsilon_pebble" in df:
+        plt.figure(figsize=(9, 5))
+        plt.semilogx(r, df["epsilon_pebble"], label=r"$\epsilon{\rm pebble}$", color=color_list[0])
+        if "epsilon_small" in df:
+            plt.semilogx(r, df["epsilon_small"], label=r"$\epsilon{\rm small}$", color=color_list[1])
+        plt.xlabel("Radius [au]")
+        plt.ylabel(r"$\rho_{\rm solid}/\rho_{\rm g}$")
+        plt.title(f"Midplane dust-to-gas ratio")#, snapshot {snap_index}")
+        plt.legend()
+        plt.grid(True, which="both", alpha=0.3)
+        savefig(f"{analysis_dir}/epsilon_profiles.png")
 
 
 # -----------------------------
@@ -1878,20 +1901,52 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         overlay=None,
         vmin=1e-6, vmax=1e0,
     )
-    # pcolor_r_z(
-    #     r,
-    #     z_over_r,
-    #     hidden_frac,
-    #     f"Hidden CO fraction, snapshot {snap_index}",
-    #     r"$\Sigma_{\rm CO,matrix}/\Sigma_{\rm CO}$",
-    #     Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
-    #     log_value=False,
-    #     overlay=None,
-    #     vmin=0.0,
-    #     vmax=1.0,
-    #     cmap="magma",
-    # )
 
+    solid_tot = (
+        data["surfbin_CO_pure_ice_pebble"]
+        + data["surfbin_CO_pure_ice_small"]
+        + data["surfbin_CO_at_CO2_ice_pebble"]
+        + data["surfbin_CO_at_CO2_ice_small"]
+        + data["surfbin_CO_at_H2O_ice_pebble"]
+        + data["surfbin_CO_at_H2O_ice_small"]
+        + data["surfbin_CO2_pure_ice_pebble"]
+        + data["surfbin_CO2_pure_ice_small"]
+        + data["surfbin_CO2_at_H2O_ice_pebble"]
+        + data["surfbin_CO2_at_H2O_ice_small"]
+        + data["surfbin_H2O_ice_pebble"]
+        + data["surfbin_H2O_ice_small"]
+        + data["surfbin_ref_solid_pebble"]
+        + data["surfbin_ref_solid_small"]
+    )
+
+    # gas in the same r-z bins.
+    gas_tot = (
+        data["surfbin_gas_bulk"]
+        + data["surfbin_CO_gas"]
+        + data["surfbin_CO2_gas"]
+        + data["surfbin_H2O_gas"]
+    )
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        metallicity = np.divide(
+            solid_tot,
+            gas_tot,
+            out=np.full_like(solid_tot, np.nan, dtype=float),
+            where=gas_tot > 0.0,
+        )
+
+    pcolor_r_z(
+        r,
+        z_over_r,
+        metallicity,
+        "Local solid-to-gas ratio",
+        r"$\Sigma_{\rm solid}/\Sigma_{\rm gas}$",
+        Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
+        log_value=True,
+        overlay=None,
+        vmin=1e-6,
+        vmax=1e0,
+    )
 
     bud = compute_volatile_budgets(data, collapse_vertical=False)
     

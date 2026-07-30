@@ -1299,6 +1299,8 @@ def apply_dust_backreaction_to_velocities(
     disk["backreaction_Y"] = Y
     disk["backreaction_A"] = A
     disk["backreaction_B"] = B
+    for carrier in epsilon_by_carrier:
+        disk[f"epsilon_{carrier}"] = epsilon_by_carrier[carrier]
 
     # Backreacted dust radial velocities for all carriers.
     for carrier in CARRIERS:
@@ -2347,12 +2349,19 @@ def write_snapshot_1d(
         "eta": disk["eta"],
         "D_g_cm2_s": disk["D_g"],
     }
+    
+    if "backreaction_A" in disk:
+        cols["backreaction_A"] = disk["backreaction_A"]
+        cols["backreaction_B"] = disk["backreaction_B"]
+        cols["v_g_phi_subkep"] = disk["v_g_phi_subkep"]
 
     for carrier in CARRIERS:
         cols[f"St_{carrier}"] = carrier_coeff[carrier]["St"]
         cols[f"v_{carrier}_cm_s"] = carrier_coeff[carrier]["v"]
         cols[f"D_{carrier}_cm2_s"] = carrier_coeff[carrier]["D"]
         cols[f"Hd_over_H_{carrier}"] = carrier_coeff[carrier]["H_ratio"]
+        if f"epsilon_{carrier}" in disk:
+            cols[f"epsilon_{carrier}"] = disk[f"epsilon_{carrier}"]
 
     for key in SURVIVAL_KEYS:
         cols[f"snow_surface_z_over_r_{key}"] = vertical["snow_surfaces_z_over_r"][key]
@@ -2428,9 +2437,21 @@ def write_snapshot_2d(
     for key in SURVIVAL_KEYS:
         data[f"survival_{key}"] = vertical["survival"][key]
         data[f"snow_surface_z_over_r_{key}"] = vertical["snow_surfaces_z_over_r"][key]
+        
+    # Bulk H/He gas and volatile-vapor surface-density bins.
+    w_gas = vertical["weights"]["gas"]
+
+    # Save the normalized vertical gas weights.
+    data["weight_gas"] = w_gas
+
+    # Bulk H/He gas surface density in each r-z bin.
+    # Summing over the vertical axis recovers disk["Sigma_g"].
+    data["surfbin_gas_bulk"] = distribute_surface_density_rz(
+        disk["Sigma_g"],
+        w_gas,
+    )
 
     # Gas vapor surface-density bins.
-    w_gas = vertical["weights"]["gas"]
     for name in VAPOR_FIELDS:
         data[f"surfbin_{name}"] = distribute_surface_density_rz(state[name], w_gas)
 
