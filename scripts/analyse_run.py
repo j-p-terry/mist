@@ -1008,7 +1008,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
         
     if "epsilon_pebble" in df:
         plt.figure(figsize=(9, 5))
-        plt.semilogx(r, df["epsilon_pebble"], label=r"$\epsilon{\rm pebble}$", color=color_list[0])
+        plt.semilogx(r, df["epsilon_pebble"], label=r"$\epsilon_{\rm pebble}$", color=color_list[0])
         if "epsilon_small" in df:
             plt.semilogx(r, df["epsilon_small"], label=r"$\epsilon{\rm small}$", color=color_list[1])
         plt.xlabel("Radius [au]")
