@@ -1944,7 +1944,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
         log_value=True,
         overlay=None,
-        vmin=1e-6,
+        vmin=1e-3,
         vmax=1e0,
     )
 
