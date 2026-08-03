@@ -128,6 +128,26 @@ MW = {
 
 RELEASE_CHANNELS = ("CO_pure", "CO_at_CO2", "CO_at_H2O")
 
+COLOR_LIST = [
+    [0.75686275, 0.21176471, 0.11372549],
+    [0.52156863, 0.58823529, 0.84313725],
+    [0.41568627, 0.24313725, 0.42352941],
+    [0.85882353, 0.58039216, 0.05098039],
+    [0.15294118, 0.19607843, 0.23529412],
+    [0.50196078, 0.52941176, 0.50196078],
+    [0.74509804, 0.52156863, 0.56862745],
+    [0.98431373, 0.62745098, 0.40784314],
+]
+
+C_RED = COLOR_LIST[0]
+C_BLUE = COLOR_LIST[1]
+C_PURPLE = COLOR_LIST[2]
+C_ORANGE = COLOR_LIST[3]
+C_DARK = COLOR_LIST[4]
+C_GREY = COLOR_LIST[5]
+C_ROSE = COLOR_LIST[6]
+C_PEACH = COLOR_LIST[7]
+
 # ---------------------------------------------------------------------
 # Plotting helpers
 # ---------------------------------------------------------------------
@@ -1757,8 +1777,8 @@ def plot_runtime_diagnostic_summary(df: pd.DataFrame, analysis_dir: Path) -> Non
         for j, (c, ac, label) in enumerate(zip(current_cols, active_cols, labels2)):
             vals = sub.get(c, pd.Series(np.zeros(len(sub)), index=sub.index)).to_numpy()
             active = sub.get(ac, pd.Series(np.zeros(len(sub)), index=sub.index)).to_numpy()
-            axes[0].bar(x + (j - 1) * width2, vals, width=width2, label=label)
-            axes[1].plot(x, active, marker="o", label=label)
+            axes[0].bar(x + (j - 1) * width2, vals, width=width2, label=label, color=COLOR_LIST[j])
+            axes[1].plot(x, active, marker="o", label=label, color=COLOR_LIST[j])
         axes[0].set_ylabel("Current rejected target mass [Earth masses]")
         axes[0].set_title("Capacity-limited target at final time")
         axes[1].set_ylabel("Fraction of radial cells with active cap")
