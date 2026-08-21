@@ -726,6 +726,7 @@ def generate_yamls(
     run_root: Path,
     model_script: str,
     save_2d: bool,
+    duration: float = 250e3,
 ) -> None:
     base = read_yaml(base_yaml)
     ensure_dir(sweep_dir)
@@ -742,6 +743,7 @@ def generate_yamls(
         params["simulation"]["name"] = name
         params["simulation"]["output_dir"] = str((run_root / name).resolve())
         params["simulation"]["overwrite"] = True
+        params["simulation"]["t_end_yr"] = duration
 
         params.setdefault("output", {})
         params["output"]["save_2d_npz"] = bool(save_2d)
@@ -3004,6 +3006,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-script", default="mixed_ice_transport_1p1d.py", type=str, help="Model script to use in commands file.")
     p.add_argument("--analysis-dir", default="sweep_analysis", type=str, help="Output directory for plots and tables.")
     p.add_argument("--save-2d", action="store_true", help="Keep 2D npz outputs enabled for all sweep runs. Default disables 2D output.")
+    p.add_argument("--duration", default=250.0, type=float, help="Duration of sweep simulations in kyr")
 
     return parser.parse_args()
 
@@ -3018,6 +3021,7 @@ def main() -> None:
             run_root=Path(args.run_root).expanduser().resolve(),
             model_script=args.model_script,
             save_2d=args.save_2d,
+            duration=args.duration * 1e3,
         )
 
     elif args.command == "analyze":
