@@ -1311,6 +1311,7 @@ ICE_SUITE_NAMES = [
     "fiducial",
     "ice_co2_trap",
     "ice_h2o_trap",
+    "vdiff_fiducial_off",
     "fiducial_w_backreact",
     "uncapped",
 ]
@@ -1321,7 +1322,7 @@ RUN_LABELS_SINGLE = {
     "fiducial": "fiducial",
     "ice_co2_trap": r"CO$_2$-rich trapping",
     "ice_h2o_trap": r"H$_2$O-rich trapping",
-    "fiducial_w_backreact": "fiducial + backreaction",
+    "fiducial_w_backreact": "backreaction",
     "uncapped": "uncapped",
     "st_pebble_0p003": r"$St_{\rm peb}=0.003$",
     "st_pebble_0p1": r"$St_{\rm peb}=0.1$",
@@ -1332,7 +1333,7 @@ RUN_LABELS_SINGLE = {
     "cond_small_0p90": r"$w_{\rm small}^{\rm cond}=0.90$",
     "vertical_Tatm_1p2": r"$T_{\rm atm}/T_{\rm mid}=1.2$",
     "vertical_Tatm_3p0": r"$T_{\rm atm}/T_{\rm mid}=3.0$",
-    "vdiff_fiducial_off": "fiducial, no vapor diffusion",
+    "vdiff_fiducial_off": "no vapor diffusion",
     "vdiff_h2o_trap_off": r"H$_2$O-rich trapping, no vapor diffusion",
     "release_cool": "cool release",
     "release_warm": "warm release",
@@ -1345,9 +1346,9 @@ RUN_LABELS_MULTILINE = {
     "fiducial": "fiducial",
     "ice_co2_trap": "CO$_2$-rich\ntrapping",
     "ice_h2o_trap": "H$_2$O-rich\ntrapping",
-    "fiducial_w_backreact": "fiducial\n+ backreaction",
+    "fiducial_w_backreact": "backreaction",
     "uncapped": "uncapped",
-    "vdiff_fiducial_off": "fiducial\nno vapor diffusion",
+    "vdiff_fiducial_off": "no vapor\ndiffusion",
     "vdiff_h2o_trap_off": "H$_2$O-rich\nno vapor diffusion",
     "release_cool": "cool\nrelease",
     "release_warm": "warm\nrelease",
@@ -1470,7 +1471,7 @@ def plot_paper_ice_suite_summary(
     #     gridspec_kw={"width_ratios": [1.25, 1.0]},
     #     constrained_layout=True,
     # )
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(14, 8))
 
     # Plot A: stacked final CO budget.
     x = np.arange(len(budget_df))
@@ -1498,11 +1499,11 @@ def plot_paper_ice_suite_summary(
         frameon=True,
     )
     apply_paper_axis_style(ax)
-    fig.savefig(analysis_dir / "paper_ice_co_budget.png", dpi=240)
+    fig.savefig(analysis_dir / "paper_ice_co_budget.pdf", dpi=240)
     plt.close(fig)
 
     # Plot B: median release radii.
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(14, 8))
     release_df = ordered(release_df, budget_df["run_name"].tolist())
     x = np.arange(len(release_df))
     w = 0.25
@@ -1535,7 +1536,7 @@ def plot_paper_ice_suite_summary(
     )
     ax.grid(True, which="both", axis="y", alpha=0.25)
 
-    fig.savefig(analysis_dir / "paper_ice_release_radius.png", dpi=240)
+    fig.savefig(analysis_dir / "paper_ice_release_radius.pdf", dpi=240)
     plt.close(fig)
 
     return budget_df
@@ -2443,7 +2444,7 @@ TABLE_RUN_LABELS = {
     "fiducial": "fiducial",
     "ice_co2_trap": r"CO$_2$-rich trapping",
     "ice_h2o_trap": r"H$_2$O-rich trapping",
-    "fiducial_w_backreact": "fiducial + backreaction",
+    "fiducial_w_backreact": "backreaction",
     "uncapped": "uncapped",
     "st_pebble_0p003": r"$St_{\rm peb}=0.003$",
     "st_pebble_0p1": r"$St_{\rm peb}=0.1$",
@@ -2454,7 +2455,7 @@ TABLE_RUN_LABELS = {
     "cond_small_0p90": r"$w_{\rm small}^{\rm cond}=0.90$",
     "vertical_Tatm_1p2": r"$T_{\rm atm}/T_{\rm mid}=1.2$",
     "vertical_Tatm_3p0": r"$T_{\rm atm}/T_{\rm mid}=3.0$",
-    "vdiff_fiducial_off": "fiducial, no vapor diffusion",
+    "vdiff_fiducial_off": "no vapor diffusion",
     "vdiff_h2o_trap_off": r"H$_2$O-rich trapping, no vapor diffusion",
     "release_cool": "cool release",
     "release_warm": "warm release",
