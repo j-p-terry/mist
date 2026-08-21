@@ -51,13 +51,14 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import matplotlib as mpl
 import matplotlib.pyplot as plt
-
 
 try:
     from colorspacious import cspace_converter
 except ImportError:  # Optional plotting enhancement.
     cspace_converter = None
+
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.colors as mcolors
 from matplotlib import rc as mplrc
@@ -236,6 +237,45 @@ def read_diagnostics(output_dir: Path) -> Optional[pd.DataFrame]:
 def read_2d_snapshot(path: Path) -> Dict[str, np.ndarray]:
     with np.load(path) as f:
         return {k: f[k] for k in f.files}
+    
+    
+def configure_matplotlib() -> None:
+    """Apply a readable, publication-oriented style without using tab10."""
+    mpl.rcParams.update(
+        {
+            "figure.dpi": 120,
+            "savefig.dpi": 350,
+            "font.family": "DejaVu Sans",
+            "font.size": 12.5,
+            "axes.labelsize": 14,
+            "axes.titlesize": 14,
+            "axes.linewidth": 1.1,
+            "axes.prop_cycle": mpl.cycler(color=color_list),
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "xtick.major.size": 6,
+            "ytick.major.size": 6,
+            "xtick.minor.size": 3.5,
+            "ytick.minor.size": 3.5,
+            "xtick.major.width": 1.0,
+            "ytick.major.width": 1.0,
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.top": True,
+            "ytick.right": True,
+            "legend.fontsize": 10.5,
+            "legend.frameon": True,
+            "legend.framealpha": 0.93,
+            "legend.edgecolor": "0.78",
+            "lines.linewidth": 2.1,
+            "grid.alpha": 0.22,
+            "grid.linewidth": 0.7,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "mathtext.fontset": "dejavusans",
+        }
+    )
+
 
 
 # -----------------------------
@@ -585,6 +625,14 @@ def compute_volatile_budgets(data, collapse_vertical=False):
         "C_over_O_solid": C_solid / np.maximum(O_solid, EPS),
         "C_over_O_gas": C_gas / np.maximum(O_gas, EPS),
         "C_over_O_total": C_total / np.maximum(O_total, EPS),
+        
+        # fractional compositions
+        "frac_CO_small": n_co_small / np.maximum(O_small, EPS),
+        "frac_CO_pebble":  n_co_pebble / np.maximum(O_pebble, EPS),
+        "frac_CO2_small": 2. * n_co2_small / np.maximum(O_small, EPS),
+        "frac_CO2_pebble":  2. * n_co2_pebble / np.maximum(O_pebble, EPS),
+        "frac_H2O_small": n_h2o_small / np.maximum(O_small, EPS),
+        "frac_H2O_pebble":  n_h2o_pebble / np.maximum(O_pebble, EPS),
 
         # Raw molar C and O budgets, useful for debugging/masking
         "C_pebble": C_pebble,
@@ -738,6 +786,18 @@ def add_volatile_budget_columns_1d(df):
     df["h2o_pebble"] = h2o_pebble
     df["h2o_small"] = h2o_small
     df["h2o_total_budget"] = h2o_total
+    
+    df["h2o_small_o_frac"] = n_h2o_small / np.maximum(O_small, EPS)
+    df["h2o_pebble_o_frac"] = n_h2o_pebble / np.maximum(O_pebble, EPS)
+    df["co2_small_o_frac"] = 2. * n_co2_small / np.maximum(O_small, EPS)
+    df["co2_pebble_o_frac"] = 2. * n_co2_pebble / np.maximum(O_pebble, EPS)
+    df["co_small_o_frac"] = n_co_small / np.maximum(O_small, EPS)
+    df["co_pebble_o_frac"] = n_co_pebble / np.maximum(O_pebble, EPS)
+    
+    df["co2_small_c_frac"] = n_co2_small / np.maximum(C_small, EPS)
+    df["co2_pebble_c_frac"] = n_co2_pebble / np.maximum(C_pebble, EPS)
+    df["co_small_c_frac"] = n_co_small / np.maximum(C_small, EPS)
+    df["co_pebble_c_frac"] = n_co_pebble / np.maximum(C_pebble, EPS)
 
     df["pebble_volatile_ice_budget"] = pebble_volatile_ice
     df["small_volatile_ice_budget"] = small_volatile_ice
@@ -794,6 +854,8 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
         return
     r = df["r_au"]
 
+    df = add_volatile_budget_columns_1d(df)
+
     plt.figure(figsize=(9, 5))
     i = 0
     this_color_list = color_list[:]
@@ -846,7 +908,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/final_carrier_profiles.png")
 
-    plt.figure(figsize=(9, 5))
+    plt.figure(figsize=(7.8, 5.2))
     i = 0
     this_color_list = color_list[:]
     for col, label in [
@@ -867,6 +929,49 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(f"{analysis_dir}/final_c_o_profiles.png")
+    
+    plt.figure(figsize=(7.8, 5.2))
+
+    this_color_list = color_list[:]
+    for col, label in [
+        ("h2o_pebble_o_frac", r"H$_2$O pebbles"),
+        ("co2_pebble_o_frac", r"CO$_2$ pebbles"),
+        ("co_pebble_o_frac", r"CO pebbles"),
+        ("h2o_small_o_frac", r"H$_2$O small-grains"),
+        ("co2_small_o_frac", r"CO$_2$ small-grains"),
+        ("co_small_o_frac", r"CO small-grains"),
+    ]:
+        if col in df.columns:
+            i = 2 if "h2o" in col else 1 if "co2" in col else 0
+            this_color_list = get_color_list(this_color_list, i)
+            plt.semilogx(r, df[col], label=label, color=this_color_list[i], ls="--" if "small" in col else "-")
+    plt.xlabel("Radius [au]")
+    plt.ylabel(r"Fraction of solid oxygen")
+    plt.title(f"Volatile fraction partitioning")#, snapshot {snap_index}")
+    plt.legend(loc="upper left", ncol=2,)
+    plt.grid(True, which="both",)
+    savefig(f"{analysis_dir}/final_o_frac_profiles.png")
+    
+    plt.figure(figsize=(7.8, 5.2))
+    this_color_list = color_list[:]
+    for col, label in [
+        ("h2o_pebble_c_frac", r"H$_2$O pebbles"),
+        ("co2_pebble_c_frac", r"CO$_2$ pebbles"),
+        ("co_pebble_c_frac", r"CO pebbles"),
+        ("h2o_small_c_frac", r"H$_2$O small-grains"),
+        ("co2_small_c_frac", r"CO$_2$ small-grains"),
+        ("co_small_c_frac", r"CO small-grains"),
+    ]:
+        if col in df.columns:
+            i = 2 if "h2o" in col else 1 if "co2" in col else 0
+            this_color_list = get_color_list(this_color_list, i)
+            plt.semilogx(r, df[col], label=label, color=this_color_list[i], ls="--" if "small" in col else "-")
+    plt.xlabel("Radius [au]")
+    plt.ylabel(r"Fraction of solid carbon")
+    plt.title(f"Volatile fraction partitioning")#, snapshot {snap_index}")
+    plt.legend(loc="upper left", ncol=2,)
+    plt.grid(True, which="both",)
+    savefig(f"{analysis_dir}/final_c_frac_profiles.png")
 
     snow_cols = [c for c in df.columns if c.startswith("snow_surface_z_over_r_")]
     if not plot_entrap_surface:
@@ -1920,33 +2025,37 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     )
 
     # gas in the same r-z bins.
-    gas_tot = (
-        data["surfbin_gas_bulk"]
-        + data["surfbin_CO_gas"]
-        + data["surfbin_CO2_gas"]
-        + data["surfbin_H2O_gas"]
-    )
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        metallicity = np.divide(
-            solid_tot,
-            gas_tot,
-            out=np.full_like(solid_tot, np.nan, dtype=float),
-            where=gas_tot > 0.0,
+    try:
+        gas_tot = (
+            data["surfbin_gas_bulk"]
+            + data["surfbin_CO_gas"]
+            + data["surfbin_CO2_gas"]
+            + data["surfbin_H2O_gas"]
         )
 
-    pcolor_r_z(
-        r,
-        z_over_r,
-        metallicity,
-        "Local solid-to-gas ratio",
-        r"$\Sigma_{\rm solid}/\Sigma_{\rm gas}$",
-        Path(f"{analysis_dir}/metallicity.png"),
-        log_value=True,
-        overlay=None,
-        vmin=1e-3,
-        vmax=1e0,
-    )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            metallicity = np.divide(
+                solid_tot,
+                gas_tot,
+                out=np.full_like(solid_tot, np.nan, dtype=float),
+                where=gas_tot > 0.0,
+            )
+
+        pcolor_r_z(
+            r,
+            z_over_r,
+            metallicity,
+            "Local solid-to-gas ratio",
+            r"$\Sigma_{\rm solid}/\Sigma_{\rm gas}$",
+            Path(f"{analysis_dir}/metallicity.png"),
+            log_value=True,
+            overlay=None,
+            vmin=1e-3,
+            vmax=1e0,
+        )
+        
+    except KeyError as e:
+        print(f"Warning: {e} not found, skipping metallicity plot")
 
     bud = compute_volatile_budgets(data, collapse_vertical=False)
     
@@ -2560,6 +2669,8 @@ def main() -> None:
     output_dir = Path(args.output_dir).expanduser().resolve()
     analysis_dir = Path(args.analysis_dir).expanduser().resolve() if args.analysis_dir else output_dir / "analysis_plots" / f"snap_{args.snap}"
     ensure_dir(analysis_dir)
+    
+    configure_matplotlib()
 
     snapshots = list_snapshots(output_dir)
     if not snapshots:
