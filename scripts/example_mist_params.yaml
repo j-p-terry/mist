@@ -3,7 +3,7 @@
 # Run with:
 #   python mixed_ice_transport_1p1d_fixed.py example_mist_params_fixed.yaml
 #
-# This configuration is for the bookkeeping-corrected model:
+# This configuration is for the basic fiducial model:
 #   - 1D radial Eulerian volatile transport
 #   - optional prescribed-inflow evolution of the H2/He gas surface density
 #   - two solid carriers: pebbles + small grains
@@ -16,7 +16,7 @@
 simulation:
   name: mixed_ice_1p1d_example
   output_dir: mixed_ice_1p1d_outputs_example
-  t_end_yr: 250000.0
+  t_end_yr: 1000000.0
 
   # If save_interval_yr is null, save_interval_fraction is used.
   # 0.01 means snapshots every 1% of total simulation time.
@@ -190,7 +190,6 @@ volatiles:
 
     release_temperatures_K:
       pure: 70.0
-      # at_H2O: 130.0
       at_H2O: 150.0
 
     transition_widths_K:
@@ -213,7 +212,8 @@ volatiles:
     #   gas
     #     Excess guest material is returned directly to gas.
     #
-    #   next_available_reservoir
+    #   next_available_reservoir 
+    #   **** NOT YET IMPLEMENTED PROPERLY ****
     #     Excess guest material first tries another same-species solid reservoir
     #     that is locally available and not over capacity; any leftover goes to gas.
     # excess_destination: next_available_reservoir
