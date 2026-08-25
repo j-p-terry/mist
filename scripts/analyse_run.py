@@ -1850,7 +1850,7 @@ def pcolor_r_z(
 ) -> None:
     outpath = Path(outpath)
 
-    fig, ax = plt.subplots(figsize=(9, 5))
+    fig, ax = plt.subplots(figsize=(7.6, 5.4))
     mesh, label = pcolor_r_z_on_axis(
         ax,
         r,
@@ -1867,7 +1867,7 @@ def pcolor_r_z(
     cb = fig.colorbar(mesh, ax=ax)
     cb.set_label(label)
     fig.tight_layout()
-    fig.savefig(outpath, dpi=220)
+    fig.savefig(outpath, dpi=350)
     plt.close(fig)
 
 
@@ -1892,7 +1892,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         r, z_over_r, data["T_K"],
         f"Vertical temperature and release surfaces",# snapshot {snap_index}",
         "T [K]",
-        f"{analysis_dir}/selected_2d_temperature_snow_surfaces.png",
+        f"{analysis_dir}/selected_2d_temperature_snow_surfaces.pdf",
         log_value=False,
         overlay=overlay,
         cmap=temp_cmap,
@@ -1912,7 +1912,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
                 r, z_over_r, data[key],
                 f"{title}",# snapshot {snap_index}",
                 r"Survival probability",
-                analysis_dir / f"selected_2d_{key}.png",
+                analysis_dir / f"selected_2d_{key}.pdf",
                 log_value=True,
                 overlay=None,
                 vmin=1e-4, vmax=1,
@@ -1934,6 +1934,8 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         ("surfbin_H2O_gas", r"H$_{2}$O gas"),
         ("surfbin_H2O_ice_pebble", r"H$_{2}$O ice, pebbles"),
         ("surfbin_H2O_ice_small", r"H$_{2}$O ice, small grains"),
+        ("surfbin_ref_solid_small", r"Refractory small grains"),
+        ("surfbin_ref_solid_pebble", r"Refractory pebbles"),
     ]
     for key, title in reservoir_maps:
         if key in data:
@@ -1941,7 +1943,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
                 r, z_over_r, data[key],
                 f"{title}",# snapshot {snap_index}",
                 r"vertical-bin surface density [g cm$^{-2}$]",
-                Path(f"{analysis_dir}/selected_2d_{key}.png"),
+                Path(f"{analysis_dir}/selected_2d_{key}.pdf"),
                 log_value=True,
                 overlay=None,
                 vmin=1e-12, vmax=1e-2,
@@ -1990,7 +1992,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         r, z_over_r, gas_frac,
         f"CO gas fraction",# snapshot {snap_index}",
         r"$\Sigma_{\rm CO,gas}/\Sigma_{\rm CO}$",
-        Path(f"{analysis_dir}/selected_2d_co_gas_frac.png"),
+        Path(f"{analysis_dir}/selected_2d_co_gas_frac.pdf"),
         log_value=True,
         overlay=None,
         vmin=1e-6,
@@ -2001,7 +2003,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         r, z_over_r, hidden_frac,
         f"Matrix-associated CO fraction",# snapshot {snap_index}",
         r"$\Sigma_{\rm CO,matrix}/\Sigma_{\rm CO}$",
-        Path(f"{analysis_dir}/selected_2d_co_hidden_frac.png"),
+        Path(f"{analysis_dir}/selected_2d_co_hidden_frac.pdf"),
         log_value=True,
         overlay=None,
         vmin=1e-6, vmax=1e0,
@@ -2047,7 +2049,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
             metallicity,
             "Local solid-to-gas ratio",
             r"$\Sigma_{\rm solid}/\Sigma_{\rm gas}$",
-            Path(f"{analysis_dir}/metallicity.png"),
+            Path(f"{analysis_dir}/metallicity.pdf"),
             log_value=True,
             overlay=None,
             vmin=1e-3,
@@ -2069,7 +2071,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     R = np.broadcast_to(r[:, None], z_over_r.shape)
     
     def plot_2d_quantity(quantity, title, cbar_label, savestr, log=False, vmin=None, vmax=None):
-        fig, ax = plt.subplots(figsize=(8, 5))
+        fig, ax = plt.subplots(figsize=(7.6, 5.4))
         mesh, label = pcolor_r_z_on_axis(
             ax,
             r,
@@ -2086,7 +2088,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         cb = fig.colorbar(mesh, ax=ax)
         cb.set_label(label)
         fig.tight_layout()
-        fig.savefig(Path(savestr).with_suffix(".png"), dpi=220)
+        fig.savefig(Path(savestr).with_suffix(".pdf"), dpi=350)
         plt.close(fig)
 
     print("Plotting small-grain volatile ice")
@@ -2151,7 +2153,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     pebble_c_o_masked = np.where(pebble_mask, bud_r["C_over_O_pebble"], np.nan)
 
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(7.6, 5.4))
     
     ax.loglog(r, Sigma_pebble_volatile, label="Pebble volatile ice", c=color_list[0])
     ax.loglog(r, Sigma_small_volatile, label="Small-grain volatile ice", c=color_list[1])
@@ -2164,7 +2166,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     plt.tight_layout()
     savefig(f"{analysis_dir}/size_sigma.png")
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(7.6, 5.4))
     
     ax.semilogx(r, pebble_c_o_masked, label="Pebble C/O", c=color_list[0])
     ax.semilogx(r, small_c_o_masked, label="Small-grain C/O", c=color_list[1])
@@ -2182,7 +2184,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     pebble_frac = Sigma_pebble_volatile / np.maximum(solid_volatile, 1e-300)
     small_frac = Sigma_small_volatile / np.maximum(solid_volatile, 1e-300)
     
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(7.6, 5.4))
     
     ax.semilogx(r, pebble_frac, label="Pebble fraction", c=color_list[0])
     ax.semilogx(r, small_frac, label="Small-grain fraction", c=color_list[1])
@@ -2201,7 +2203,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     co_pebble_frac = bud_r["co_pebble_fraction"]
     co_small_frac = bud_r["co_small_fraction"]
     
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(7.6, 5.4))
     
     ax.semilogx(r, co_gas_frac, label="CO gas / total CO", c=color_list[0])
     ax.semilogx(r, co_hidden_frac, label="Hidden CO / total CO", c=color_list[1])
@@ -2216,8 +2218,6 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
     savefig(f"{analysis_dir}/co_partition.png")
-
-
 
 # -----------------------------
 # Paper-facing summary plots
