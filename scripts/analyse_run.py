@@ -552,18 +552,23 @@ def compute_volatile_budgets(data, collapse_vertical=False):
 
     C_pebble = n_co_pebble + n_co2_pebble
     O_pebble = n_co_pebble + 2.0 * n_co2_pebble + n_h2o_pebble
+    H_pebble = 2.0 * n_h2o_pebble
 
     C_small = n_co_small + n_co2_small
     O_small = n_co_small + 2.0 * n_co2_small + n_h2o_small
+    H_small = 2.0 * n_h2o_small
 
     C_gas = n_co_gas + n_co2_gas
     O_gas = n_co_gas + 2.0 * n_co2_gas + n_h2o_gas
+    H_gas = 2.0 * n_h2o_gas
 
     C_solid = C_pebble + C_small
     O_solid = O_pebble + O_small
+    H_solid = H_pebble + H_small
 
     C_total = C_solid + C_gas
     O_total = O_solid + O_gas
+    H_total = H_solid + H_gas
 
     out = {
         # CO budgets
@@ -626,6 +631,20 @@ def compute_volatile_budgets(data, collapse_vertical=False):
         "C_over_O_gas": C_gas / np.maximum(O_gas, EPS),
         "C_over_O_total": C_total / np.maximum(O_total, EPS),
         
+        # Molar O/H ratios
+        "O_over_H_pebble": O_pebble / np.maximum(H_pebble, EPS),
+        "O_over_H_small": O_small / np.maximum(H_small, EPS),
+        "O_over_H_solid": O_solid / np.maximum(H_solid, EPS),
+        "O_over_H_gas": O_gas / np.maximum(H_gas, EPS),
+        "O_over_H_total": O_total / np.maximum(H_total, EPS),
+        
+        # Molar C/H ratios
+        "C_over_H_pebble": C_pebble / np.maximum(H_pebble, EPS),
+        "C_over_H_small": C_small / np.maximum(H_small, EPS),
+        "C_over_H_solid": C_solid / np.maximum(H_solid, EPS),
+        "C_over_H_gas": C_gas / np.maximum(H_gas, EPS),
+        "C_over_H_total": C_total / np.maximum(H_total, EPS),
+        
         # fractional compositions
         "frac_CO_small": n_co_small / np.maximum(O_small, EPS),
         "frac_CO_pebble":  n_co_pebble / np.maximum(O_pebble, EPS),
@@ -634,7 +653,7 @@ def compute_volatile_budgets(data, collapse_vertical=False):
         "frac_H2O_small": n_h2o_small / np.maximum(O_small, EPS),
         "frac_H2O_pebble":  n_h2o_pebble / np.maximum(O_pebble, EPS),
 
-        # Raw molar C and O budgets, useful for debugging/masking
+        # Raw molar C, O, and H budgets, useful for debugging/masking
         "C_pebble": C_pebble,
         "O_pebble": O_pebble,
         "C_small": C_small,
@@ -643,6 +662,10 @@ def compute_volatile_budgets(data, collapse_vertical=False):
         "O_gas": O_gas,
         "C_total": C_total,
         "O_total": O_total,
+        "H_pebble": H_pebble,
+        "H_small": H_small,
+        "H_gas": H_gas,
+        "H_total": H_total,
     }
 
     return out
@@ -758,12 +781,15 @@ def add_volatile_budget_columns_1d(df):
 
     C_pebble = n_co_pebble + n_co2_pebble
     O_pebble = n_co_pebble + 2.0 * n_co2_pebble + n_h2o_pebble
+    H_pebble = 2.0 * n_h2o_pebble
 
     C_small = n_co_small + n_co2_small
     O_small = n_co_small + 2.0 * n_co2_small + n_h2o_small
+    H_small = 2.0 * n_h2o_small
 
     C_gas = n_co_gas + n_co2_gas
     O_gas = n_co_gas + 2.0 * n_co2_gas + n_h2o_gas
+    H_gas = 2.0 * n_h2o_gas
 
     # -------------------------
     # Store columns
@@ -825,6 +851,12 @@ def add_volatile_budget_columns_1d(df):
     df["C_over_O_pebble_budget"] = C_pebble / np.maximum(O_pebble, EPS)
     df["C_over_O_small_budget"] = C_small / np.maximum(O_small, EPS)
     df["C_over_O_gas_budget"] = C_gas / np.maximum(O_gas, EPS)
+    df["C_over_H_pebble_budget"] = C_pebble / np.maximum(H_pebble, EPS)
+    df["C_over_H_small_budget"] = C_small / np.maximum(H_small, EPS)
+    df["C_over_H_gas_budget"] = C_gas / np.maximum(H_gas, EPS)
+    df["O_over_H_pebble_budget"] = O_pebble / np.maximum(H_pebble, EPS)
+    df["O_over_H_small_budget"] = O_small / np.maximum(H_small, EPS)
+    df["O_over_H_gas_budget"] = O_gas / np.maximum(H_gas, EPS)
 
     # Mask low-mass C/O regions.
     small_thresh = 1e-8 * np.nanmax(small_volatile_ice)
@@ -839,6 +871,30 @@ def add_volatile_budget_columns_1d(df):
     df["C_over_O_pebble_masked"] = np.where(
         pebble_volatile_ice > pebble_thresh,
         df["C_over_O_pebble_budget"],
+        np.nan,
+    )
+    
+    df["C_over_H_pebble_masked"] = np.where(
+        pebble_volatile_ice > pebble_thresh,
+        df["C_over_H_pebble_budget"],
+        np.nan,
+    )
+    
+    df["O_over_H_pebble_masked"] = np.where(
+        pebble_volatile_ice > pebble_thresh,
+        df["O_over_H_pebble_budget"],
+        np.nan,
+    )
+    
+    df["C_over_H_small_masked"] = np.where(
+        small_volatile_ice > small_thresh,
+        df["C_over_H_small_budget"],
+        np.nan,
+    )
+    
+    df["O_over_H_small_masked"] = np.where(
+        small_volatile_ice > small_thresh,
+        df["O_over_H_small_budget"],
         np.nan,
     )
 
@@ -918,6 +974,12 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
         ("C_over_O_small", "small-grain volatile C/O"),
         ("hidden_CO_fraction", "matrix-associated CO fraction"),
         ("gas_CO_fraction", "gas CO fraction"),
+        ("C_over_H_pebble", "pebble volatile C/H"),
+        ("C_over_H_small", "small-grain volatile C/H"),
+        ("C_over_H_gas", "gas C/H"),
+        ("O_over_H_pebble", "pebble volatile O/H"),
+        ("O_over_H_small", "small-grain volatile O/H"),
+        ("O_over_H_gas", "gas O/H"),
     ]:
         if col in df.columns:
             this_color_list = get_color_list(this_color_list, i)
@@ -1508,6 +1570,38 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
             1e-3, 1e1,
         ),
         (
+            "C_over_H_pebble_masked",
+            "time_radius_pebble_c_h_masked.png",
+            "Pebble volatile C/H",
+            "pebble volatile C/H",
+            True,
+            1e-3, 1e1,
+        ),
+        (
+            "C_over_H_small_masked",
+            "time_radius_small_c_h_masked.png",
+            "Small-grain volatile C/H",
+            "small-grain volatile C/H",
+            True,
+            1e-3, 1e1,
+        ),
+        (
+            "O_over_H_pebble_masked",
+            "time_radius_pebble_o_h_masked.png",
+            "Pebble volatile O/H",
+            "pebble volatile O/H",
+            True,
+            1e-3, 1e1,
+        ),
+        (
+            "O_over_H_small_masked",
+            "time_radius_small_o_h_masked.png",
+            "Small-grain volatile O/H",
+            "small-grain volatile O/H",
+            True,
+            1e-3, 1e1,
+        ),
+        (
             "co_gas_budget",
             "time_radius_co_gas_surface_density.png",
             "CO gas surface density",
@@ -2066,6 +2160,10 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     pebble_volatile_2d = bud["pebble_volatile_ice"]
     small_c_o_2d = bud["C_over_O_small"]
     pebble_c_o_2d = bud["C_over_O_pebble"]
+    small_c_h_2d = bud["C_over_H_small"]
+    pebble_c_h_2d = bud["C_over_H_pebble"]
+    small_o_h_2d = bud["O_over_H_small"]
+    pebble_o_h_2d = bud["O_over_H_pebble"]
 
     z_over_r = data["z_over_r"]
     R = np.broadcast_to(r[:, None], z_over_r.shape)
@@ -2114,6 +2212,10 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     
     small_c_o_2d_masked = np.where(small_mask_2d, small_c_o_2d, np.nan)
     pebble_c_o_2d_masked = np.where(pebble_mask_2d, pebble_c_o_2d, np.nan)
+    small_c_h_2d_masked = np.where(small_mask_2d, small_c_h_2d, np.nan)
+    pebble_c_h_2d_masked = np.where(pebble_mask_2d, pebble_c_h_2d, np.nan)
+    small_o_h_2d_masked = np.where(small_mask_2d, small_o_h_2d, np.nan)
+    pebble_o_h_2d_masked = np.where(pebble_mask_2d, pebble_o_h_2d, np.nan)
     
     print("Plotting small-grain volatile C/O")
     plot_2d_quantity(
@@ -2136,6 +2238,50 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         vmin=0,
         vmax=1,
     )
+    
+    print("Plotting small-grain volatile C/H")
+    plot_2d_quantity(
+        small_c_h_2d_masked,
+        "Small-grain volatile C/H",
+        "C/H",
+        f"{analysis_dir}/small_c_h",
+        log=False,
+        vmin=0,
+        vmax=1,
+    )
+    
+    print("Plotting pebble volatile C/H")
+    plot_2d_quantity(
+        pebble_c_h_2d_masked,
+        "Pebble volatile C/H",
+        "C/H",
+        f"{analysis_dir}/pebble_c_h",
+        log=False,
+        vmin=0,
+        vmax=1,
+    )
+    
+    print("Plotting small-grain volatile O/H")
+    plot_2d_quantity(
+        small_o_h_2d_masked,
+        "Small-grain volatile O/H",
+        "O/H",
+        f"{analysis_dir}/small_o_h",
+        log=False,
+        vmin=0,
+        vmax=1,
+    )
+    
+    print("Plotting pebble volatile O/H")
+    plot_2d_quantity(
+        pebble_o_h_2d_masked,
+        "Pebble volatile O/H",
+        "O/H",
+        f"{analysis_dir}/pebble_o_h",
+        log=False,
+        vmin=0,
+        vmax=1,
+    )
 
     bud_r = compute_volatile_budgets(data, collapse_vertical=True)
     
@@ -2151,6 +2297,11 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     
     small_c_o_masked = np.where(small_mask, bud_r["C_over_O_small"], np.nan)
     pebble_c_o_masked = np.where(pebble_mask, bud_r["C_over_O_pebble"], np.nan)
+    
+    small_c_h_masked = np.where(small_mask, bud_r["C_over_H_small"], np.nan)
+    pebble_c_h_masked = np.where(pebble_mask, bud_r["C_over_H_pebble"], np.nan)
+    small_o_h_masked = np.where(small_mask, bud_r["O_over_H_small"], np.nan)
+    pebble_o_h_masked = np.where(pebble_mask, bud_r["O_over_H_pebble"], np.nan)
 
 
     fig, ax = plt.subplots(figsize=(7.6, 5.4))
@@ -2178,6 +2329,32 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
     savefig(f"{analysis_dir}/size_c_o.png")
+    
+    fig, ax = plt.subplots(figsize=(7.6, 5.4))
+    
+    ax.semilogx(r, pebble_c_h_masked, label="Pebble C/H", c=color_list[0])
+    ax.semilogx(r, small_c_h_masked, label="Small-grain C/H", c=color_list[1])
+    
+    ax.set_xlabel("Radius [au]")
+    ax.set_ylabel("C/H")
+    ax.set_title("Carrier-resolved volatile C/H")
+    ax.legend()
+    ax.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+    savefig(f"{analysis_dir}/size_c_h.png")
+    
+    fig, ax = plt.subplots(figsize=(7.6, 5.4))
+    
+    ax.semilogx(r, pebble_o_h_masked, label="Pebble O/H", c=color_list[0])
+    ax.semilogx(r, small_o_h_masked, label="Small-grain O/H", c=color_list[1])
+    
+    ax.set_xlabel("Radius [au]")
+    ax.set_ylabel("O/H")
+    ax.set_title("Carrier-resolved volatile O/H")
+    ax.legend()
+    ax.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+    savefig(f"{analysis_dir}/size_o_h.png")
 
     solid_volatile = Sigma_pebble_volatile + Sigma_small_volatile
     
