@@ -927,7 +927,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.xlabel("Radius [au]")
     plt.ylabel(r"Surface density [g cm$^{-2}$]")
     plt.title(f"Volatile reservoir profiles")#, snapshot {snap_index}")
-    plt.ylim(bottom=1e-8)
+    plt.ylim(bottom=1e-8, top=5e2)
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
     savefig(analysis_dir / "final_volatile_profiles.png")
@@ -1199,49 +1199,53 @@ def pcolormesh_time_radius_computed(
     cmap="magma",
     vmin=None, vmax=None,
 ):
-    frames = []
-    times = []
+    try:
+        frames = []
+        times = []
 
-    for snap in snapshots:
-        df = read_snapshot(snap.path)
-        df = add_volatile_budget_columns_1d(df)
+        for snap in snapshots:
+            df = read_snapshot(snap.path)
+            df = add_volatile_budget_columns_1d(df)
 
-        if value_column not in df.columns:
-            continue
+            if value_column not in df.columns:
+                continue
 
-        frames.append(df)
-        times.append(float(df["time_yr"].iloc[0]))
+            frames.append(df)
+            times.append(float(df["time_yr"].iloc[0]))
 
-    if len(frames) < 2:
-        return
+        if len(frames) < 2:
+            return
 
-    r = frames[0]["r_au"].to_numpy(dtype=float)
-    values = np.vstack([f[value_column].to_numpy(dtype=float) for f in frames])
-    t = np.asarray(times, dtype=float)
+        r = frames[0]["r_au"].to_numpy(dtype=float)
+        values = np.vstack([f[value_column].to_numpy(dtype=float) for f in frames])
+        t = np.asarray(times, dtype=float)
 
-    if log_value:
-        positive = values[np.isfinite(values) & (values > 0)]
-        floor = positive.min() * 1e-3 if positive.size else 1e-300
-        # plot_values = np.log10(np.maximum(values, floor))
-        # cb_label = r"$\log_{10}$ " + label
-        plot_values = np.maximum(values, floor)
-        cb_label = label
-        norm = LogNorm(vmin=vmin, vmax=vmax)
-    else:
-        plot_values = values
-        cb_label = label
-        norm = Normalize(vmin=vmin, vmax=vmax)
+        if log_value:
+            positive = values[np.isfinite(values) & (values > 0)]
+            floor = positive.min() * 1e-3 if positive.size else 1e-300
+            # plot_values = np.log10(np.maximum(values, floor))
+            # cb_label = r"$\log_{10}$ " + label
+            plot_values = np.maximum(values, floor)
+            cb_label = label
+            norm = LogNorm(vmin=vmin, vmax=vmax)
+        else:
+            plot_values = values
+            cb_label = label
+            norm = Normalize(vmin=vmin, vmax=vmax)
 
-    plt.figure(figsize=(9, 5))
-    mesh = plt.pcolormesh(r, t, plot_values, shading="auto", cmap=cmap, norm=norm, rasterized=True)
-    plt.xscale("log")
-    plt.xlabel("Radius [au]")
-    plt.ylabel("Time [yr]")
-    plt.title(title)
-    cb = plt.colorbar(mesh)
-    cb.set_label(cb_label)
-    savefig(outpath)
-    
+        plt.figure(figsize=(9, 5))
+        mesh = plt.pcolormesh(r, t, plot_values, shading="auto", cmap=cmap, norm=norm, rasterized=True)
+        plt.xscale("log")
+        plt.xlabel("Radius [au]")
+        plt.ylabel("Time [yr]")
+        plt.title(title)
+        cb = plt.colorbar(mesh)
+        cb.set_label(cb_label)
+        savefig(outpath)
+        
+    except Exception as e:
+        print(f"Failed to plot {outpath}: {e}")
+        
 def make_paper_time_radius_co_partitioning(
     snapshots,
     analysis_dir,
@@ -1944,25 +1948,28 @@ def pcolor_r_z(
 ) -> None:
     outpath = Path(outpath)
 
-    fig, ax = plt.subplots(figsize=(7.6, 5.4))
-    mesh, label = pcolor_r_z_on_axis(
-        ax,
-        r,
-        z_over_r,
-        values,
-        cb_label=cb_label,
-        log_value=log_value,
-        overlay=overlay,
-        vmin=vmin,
-        vmax=vmax,
-        cmap=cmap,
-    )
-    ax.set_title(title)
-    cb = fig.colorbar(mesh, ax=ax)
-    cb.set_label(label)
-    fig.tight_layout()
-    fig.savefig(outpath, dpi=350)
-    plt.close(fig)
+    try:
+        fig, ax = plt.subplots(figsize=(7.6, 5.4))
+        mesh, label = pcolor_r_z_on_axis(
+            ax,
+            r,
+            z_over_r,
+            values,
+            cb_label=cb_label,
+            log_value=log_value,
+            overlay=overlay,
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+        )
+        ax.set_title(title)
+        cb = fig.colorbar(mesh, ax=ax)
+        cb.set_label(label)
+        fig.tight_layout()
+        fig.savefig(outpath, dpi=350)
+        plt.close(fig)
+    except Exception as e:
+        print(f"Failed to plot {outpath}: {e}")
 
 
 def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: int, 
