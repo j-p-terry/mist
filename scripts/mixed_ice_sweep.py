@@ -1,7 +1,7 @@
 """
 mixed_ice_sweep.py
 
-Generate and analyze a compact 21-run parameter sweep for the 1+1D mixed-ice
+Generate and analyze a compact 24-run parameter sweep for the 1+1D mixed-ice
 transport model.
 
 This script does two things:
@@ -390,7 +390,7 @@ def make_run_specs() -> List[Dict[str, Any]]:
             "description": "High-resolution fiducial mixed-ice model.",
             "overrides": {
                 "grid": {
-                    "ncells": 800,
+                    "n_cells": 800,
                 }
             },
         },
@@ -400,7 +400,7 @@ def make_run_specs() -> List[Dict[str, Any]]:
             "description": "Low-resolution fiducial mixed-ice model.",
             "overrides": {
                 "grid": {
-                    "ncells": 200,
+                    "n_cells": 200,
                 }
             },
         },
@@ -1389,6 +1389,9 @@ ICE_SUITE_NAMES = [
     "vertical_Tatm_1p2",
     "st_pebble_0p003",
     "release_different",
+    "irreversible",
+    "high_res",
+    "low_res",
 ]
 
 RUN_LABELS_SINGLE = {
@@ -1413,6 +1416,9 @@ RUN_LABELS_SINGLE = {
     "release_cool": "cool release",
     "release_warm": "warm release",
     "release_different": "different release",
+    "irreversible": "irreversible release",
+    "high_res": "high resolution",
+    "low_res": "low resolution",
 }
 
 RUN_LABELS_MULTILINE = {
@@ -1432,6 +1438,9 @@ RUN_LABELS_MULTILINE = {
     "vertical_Tatm_3p0": "hot\natm.",
     "vertical_Tatm_1p2": "cold\natm.",
     "st_pebble_0p003": r"low St$_{\rm peb}$",
+    "irreversible": "irreversible\nrelease",
+    "high_res": "high\nresolution",
+    "low_res": "low\nresolution",
 }
 
 CHANNEL_LABELS = {
