@@ -110,6 +110,7 @@ except ImportError:  # Optional plotting enhancement.
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.colors as mcolors
 from matplotlib import rc as mplrc
+import matplotlib as mpl
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap, LogNorm, SymLogNorm
 import numpy as np
 import pandas as pd
@@ -225,6 +226,44 @@ color_list = [[0.75686275, 0.21176471, 0.11372549],
 # ---------------------------------------------------------------------
 # General helpers
 # ---------------------------------------------------------------------
+
+def configure_matplotlib() -> None:
+    """Apply a readable, publication-oriented style without using tab10."""
+    mpl.rcParams.update(
+        {
+            "figure.dpi": 120,
+            "savefig.dpi": 350,
+            "font.family": "DejaVu Sans",
+            "font.size": 12.5,
+            "axes.labelsize": 14,
+            "axes.titlesize": 14,
+            "axes.linewidth": 1.1,
+            "axes.prop_cycle": mpl.cycler(color=color_list),
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "xtick.major.size": 6,
+            "ytick.major.size": 6,
+            "xtick.minor.size": 3.5,
+            "ytick.minor.size": 3.5,
+            "xtick.major.width": 1.0,
+            "ytick.major.width": 1.0,
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.top": True,
+            "ytick.right": True,
+            "legend.fontsize": 10.5,
+            "legend.frameon": True,
+            "legend.framealpha": 0.93,
+            "legend.edgecolor": "0.78",
+            "lines.linewidth": 2.1,
+            "grid.alpha": 0.22,
+            "grid.linewidth": 0.7,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "mathtext.fontset": "dejavusans",
+        }
+    )
+
 def read_yaml(path: Path) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -1314,10 +1353,14 @@ ICE_SUITE_NAMES = [
     "vdiff_fiducial_off",
     "fiducial_w_backreact",
     "uncapped",
+    "cond_equal_0p50",
+    "vertical_Tatm_3p0",
+    "vertical_Tatm_1p2",
+    "st_pebble_0p003"
 ]
 
 RUN_LABELS_SINGLE = {
-    "ice_pure_snowline": "pure snow-surface",
+    "ice_pure_snowline": "no sequestration",
     "ice_low_trap": "low trapping",
     "fiducial": "fiducial",
     "ice_co2_trap": r"CO$_2$-rich trapping",
@@ -1331,8 +1374,8 @@ RUN_LABELS_SINGLE = {
     "cond_pebble_0p99": r"$w_{\rm small}^{\rm cond}=0.01$",
     "cond_equal_0p50": r"$w_{\rm small}^{\rm cond}=0.50$",
     "cond_small_0p90": r"$w_{\rm small}^{\rm cond}=0.90$",
-    "vertical_Tatm_1p2": r"$T_{\rm atm}/T_{\rm mid}=1.2$",
-    "vertical_Tatm_3p0": r"$T_{\rm atm}/T_{\rm mid}=3.0$",
+    "vertical_Tatm_1p2": r"cold",
+    "vertical_Tatm_3p0": r"hot",
     "vdiff_fiducial_off": "no vapor diffusion",
     "vdiff_h2o_trap_off": r"H$_2$O-rich trapping, no vapor diffusion",
     "release_cool": "cool release",
@@ -1341,7 +1384,7 @@ RUN_LABELS_SINGLE = {
 }
 
 RUN_LABELS_MULTILINE = {
-    "ice_pure_snowline": "pure\nsnow-surface",
+    "ice_pure_snowline": "no\nsequestration",
     "ice_low_trap": "low\ntrapping",
     "fiducial": "fiducial",
     "ice_co2_trap": "CO$_2$-rich\ntrapping",
@@ -1353,6 +1396,10 @@ RUN_LABELS_MULTILINE = {
     "release_cool": "cool\nrelease",
     "release_warm": "warm\nrelease",
     "release_different": "different\nrelease",
+    "cond_equal_0p50": "equal\ntrapping",
+    "vertical_Tatm_3p0": "hot\natm.",
+    "vertical_Tatm_1p2": "cold\natm.",
+    "st_pebble_0p003": r"low St$_{\rm peb}$",
 }
 
 CHANNEL_LABELS = {
@@ -1471,7 +1518,7 @@ def plot_paper_ice_suite_summary(
     #     gridspec_kw={"width_ratios": [1.25, 1.0]},
     #     constrained_layout=True,
     # )
-    fig, ax = plt.subplots(figsize=(14, 8))
+    fig, ax = plt.subplots(figsize=(18, 8))
 
     # Plot A: stacked final CO budget.
     x = np.arange(len(budget_df))
@@ -1491,7 +1538,7 @@ def plot_paper_ice_suite_summary(
     ax.set_xticklabels([pretty_run_label(n, multiline=True) for n in budget_df["run_name"]], rotation=0)
     ax.set_ylim(0.0, 1.0)
     ax.set_ylabel("Fraction of total CO")
-    ax.set_title("Final global CO budget")
+    ax.set_title("Final global CO partitioning")
     ax.legend(
         loc="upper center",
         bbox_to_anchor=(0.5, 1.14),
@@ -1503,7 +1550,7 @@ def plot_paper_ice_suite_summary(
     plt.close(fig)
 
     # Plot B: median release radii.
-    fig, ax = plt.subplots(figsize=(14, 8))
+    fig, ax = plt.subplots(figsize=(18, 8))
     release_df = ordered(release_df, budget_df["run_name"].tolist())
     x = np.arange(len(release_df))
     w = 0.25
@@ -1527,7 +1574,7 @@ def plot_paper_ice_suite_summary(
     ax.set_xticks(x)
     ax.set_xticklabels([pretty_run_label(n, multiline=True) for n in release_df["run_name"]], rotation=0)
     ax.set_ylabel(r"Median gross-loss radius, $R_{50}$ [au]")
-    ax.set_title("Matrix-dependent gross CO-reservoir loss")
+    ax.set_title("Reservoir-dependent CO gross-reservoir loss radii")
     ax.legend(
         loc="upper center",
         bbox_to_anchor=(0.5, 1.14),
@@ -1835,8 +1882,10 @@ def plot_ice_release(df: pd.DataFrame, analysis_dir: Path) -> None:
 
 
 def plot_ice_partitioning(df: pd.DataFrame, analysis_dir: Path) -> None:
-    names = ["ice_pure_snowline", "ice_low_trap", "fiducial", "ice_co2_trap", "ice_h2o_trap", "fiducial_w_backreact", "uncapped"]
-    sub = ordered(df, names)
+    names = ["ice_pure_snowline", "ice_low_trap", "fiducial", "ice_co2_trap", 
+             "ice_h2o_trap", "fiducial_w_backreact", "uncapped",
+             "cond_equal_0p50"]
+    sub = ordered(df, names)    
     print(sub)
     if sub.empty:
         return
@@ -2065,6 +2114,7 @@ def plot_freezeout(df: pd.DataFrame, analysis_dir: Path) -> None:
         "fiducial",
         "ice_co2_trap",
         "ice_h2o_trap",
+        "cond_equal_0p50",
     ]
 
     ice = ordered(sub, ice_names)
@@ -2180,6 +2230,7 @@ def plot_final_co_budget_stacked(
             "fiducial",
             "ice_co2_trap",
             "ice_h2o_trap",
+            "cond_equal_0p50",
             "fiducial_w_backreact",
             "uncapped",
         ]
@@ -2262,6 +2313,7 @@ def plot_final_co_budget_stacked(
         "fiducial": "fiducial",
         "ice_co2_trap": "CO$_2$\ntrap",
         "ice_h2o_trap": "H$_2$O\ntrap",
+        "cond_equal_0p50": "equal pebble/\nsmall-grain trapping",
         "fiducial_w_backreact": "fiducial\n+ backreaction",
         "uncapped": "uncapped",
     }
@@ -3014,6 +3066,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    configure_matplotlib()
 
     if args.command == "generate":
         generate_yamls(

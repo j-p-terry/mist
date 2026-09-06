@@ -17,25 +17,25 @@ This script reads:
     snapshots_2d/snapshot2d_*.npz  [optional]
 
 It makes:
-    diagnostics_masses.png
-    diagnostics_fractions.png
-    diagnostics_boundary_losses.png
-    diagnostics_phase_exchange.png
-    diagnostics_capacity_limiting.png
-    diagnostics_numerical_quality.png
-    diagnostics_timestep.png
-    diagnostics_backreaction_strength.png  [when applicable]
-    capacity_rejection_profile.png
-    co_phase_exchange_profile.png
-    final_volatile_profiles.png
-    final_carrier_profiles.png
-    final_c_o_profiles.png
-    final_snow_surfaces.png
-    time_radius_*.png
-    selected_2d_*.png
-    paper_radial_co_and_carrier_composition.png
-    paper_cumulative_release_profile.png
-    paper_fiducial_morphology.png
+    diagnostics_masses.pdf
+    diagnostics_fractions.pdf
+    diagnostics_boundary_losses.pdf
+    diagnostics_phase_exchange.pdf
+    diagnostics_capacity_limiting.pdf
+    diagnostics_numerical_quality.pdf
+    diagnostics_timestep.pdf
+    diagnostics_backreaction_strength.pdf  [when applicable]
+    capacity_rejection_profile.pdf
+    co_phase_exchange_profile.pdf
+    final_volatile_profiles.pdf
+    final_carrier_profiles.pdf
+    final_c_o_profiles.pdf
+    final_snow_surfaces.pdf
+    time_radius_*.pdf
+    selected_2d_*.pdf
+    paper_radial_co_and_carrier_composition.pdf
+    paper_cumulative_release_profile.pdf
+    paper_fiducial_morphology.pdf
     summary_metrics.csv
 """
 
@@ -301,7 +301,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
             plt.plot(t, np.maximum(diag[colname], EPS), label=label, color=this_colors[i])
     plt.yscale("log"); plt.xlabel("Time [yr]"); plt.ylabel("Mass [Earth masses]"); plt.title("Global volatile inventories")
     plt.legend(ncols=2, fontsize=8); plt.grid(True, which="both", alpha=0.3)
-    savefig(Path(analysis_dir) / "diagnostics_masses.png")
+    savefig(Path(analysis_dir) / "diagnostics_masses.pdf")
 
     if has_columns(diag, ["M_CO_total_mearth", "M_CO_gas_mearth", "M_CO_hidden_mearth"]):
         total = np.maximum(diag["M_CO_total_mearth"].to_numpy(), EPS)
@@ -312,7 +312,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
             plt.plot(t, diag["M_CO_solid_mearth"] / total, label="solid CO / total CO", color=color_list[2])
         plt.xlabel("Time [yr]"); plt.ylabel("Fraction"); plt.ylim(-0.02, 1.02); plt.title("Global CO partitioning")
         plt.legend(); plt.grid(True, alpha=0.3)
-        savefig(Path(analysis_dir) / "diagnostics_fractions.png")
+        savefig(Path(analysis_dir) / "diagnostics_fractions.pdf")
 
     # Cumulative boundary losses distinguish inward delivery from outer-domain loss.
     boundary_cols = [f"cum_boundary_{side}_{sp}_mearth" for side in ("inner", "outer") for sp in ("CO", "CO2", "H2O")]
@@ -325,7 +325,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
                     ax.plot(t, diag[c], label=sp, color=color_list[i])
             ax.set_title(title); ax.set_xlabel("Time [yr]"); ax.grid(True, alpha=0.25); ax.legend()
         axes[0].set_ylabel("Cumulative mass [Earth masses]")
-        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_boundary_losses.png", dpi=220); plt.close(fig)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_boundary_losses.pdf", dpi=220); plt.close(fig)
 
     # Sign-separated gas phase exchange shows gross cycling versus net production.
     if any(f"cum_phase_gas_gain_{sp}_mearth" in diag.columns for sp in ("CO", "CO2", "H2O")):
@@ -337,7 +337,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
                     ax.plot(t, diag[c], label=label, linestyle=ls)
             ax.axhline(0.0, color="0.5", linewidth=0.8); ax.set_title(sp); ax.set_xlabel("Time [yr]"); ax.grid(True, alpha=0.25)
         axes[0].set_ylabel("Cumulative phase exchange [Earth masses]"); axes[-1].legend(fontsize=8)
-        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_phase_exchange.png", dpi=220); plt.close(fig)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_phase_exchange.pdf", dpi=220); plt.close(fig)
 
     # Host-capacity diagnostics: instantaneous target rejection and gross throughput.
     cap_channels = ("CO_at_CO2", "CO_at_H2O", "CO2_at_H2O")
@@ -357,7 +357,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
         axes[2].set_title("Capacity-rejected material sent to gas"); axes[2].set_ylabel("Cumulative gross throughput [Earth masses]")
         for ax in axes:
             ax.set_xlabel("Time [yr]"); ax.grid(True, alpha=0.25); ax.legend(fontsize=8)
-        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_capacity_limiting.png", dpi=220); plt.close(fig)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_capacity_limiting.pdf", dpi=220); plt.close(fig)
 
     # Numerical mass balance and positivity corrections.
     residual_cols = [f"mass_balance_residual_fraction_{sp}" for sp in ("CO", "CO2", "H2O")]
@@ -372,7 +372,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
         axes[0].axhline(0.0, color="0.5", linewidth=0.8); axes[0].set_title("Species mass-balance residual"); axes[0].set_ylabel(r"$(M+M_{out}-M_0-M_{clip})/M_0$")
         axes[1].set_yscale("log"); axes[1].set_title("Cumulative positivity correction"); axes[1].set_ylabel("Added mass [Earth masses]")
         for ax in axes: ax.set_xlabel("Time [yr]"); ax.grid(True, which="both", alpha=0.25); ax.legend()
-        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_numerical_quality.png", dpi=220); plt.close(fig)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_numerical_quality.pdf", dpi=220); plt.close(fig)
 
     if has_columns(diag, ["dt_min_yr", "dt_mean_yr", "dt_max_yr"]):
         fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
@@ -382,7 +382,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
             if c in diag.columns: axes[1].plot(t, diag[c], label=label)
         axes[1].set_ylabel("Cumulative step count"); axes[1].set_title("Timestep limiter") ; axes[1].legend(fontsize=8)
         for ax in axes: ax.set_xlabel("Time [yr]"); ax.grid(True, which="both", alpha=0.25)
-        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_timestep.png", dpi=220); plt.close(fig)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_timestep.pdf", dpi=220); plt.close(fig)
 
     br_cols = ["mass_weighted_epsilon_pebble", "mass_weighted_rel_delta_v_gas_backreaction", "mass_weighted_rel_delta_v_pebble_backreaction"]
     if any(c in diag.columns and np.nanmax(np.abs(diag[c])) > 0 for c in br_cols):
@@ -394,7 +394,7 @@ def make_diagnostics_plots(diag: Optional[pd.DataFrame], analysis_dir: Path) -> 
             if c in diag.columns: axes[1].plot(t, diag[c], label=label)
         axes[1].set_title("Backreaction velocity modification"); axes[1].set_ylabel(r"mass-weighted $|v-v_0|/|v_0|$"); axes[1].legend()
         for ax in axes: ax.set_xlabel("Time [yr]"); ax.grid(True, alpha=0.25)
-        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_backreaction_strength.png", dpi=220); plt.close(fig)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "diagnostics_backreaction_strength.pdf", dpi=220); plt.close(fig)
 
 def _zero_like_any(data):
     """Return a zero array with the same shape as the first ndarray in data."""
@@ -930,7 +930,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.ylim(bottom=1e-8, top=5e2)
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(analysis_dir / "final_volatile_profiles.png")
+    savefig(analysis_dir / "final_volatile_profiles.pdf")
 
     plt.figure(figsize=(9, 5))
     this_color_list = color_list[:]
@@ -962,7 +962,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.title(f"Carrier-resolved solid profiles")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(f"{analysis_dir}/final_carrier_profiles.png")
+    savefig(f"{analysis_dir}/final_carrier_profiles.pdf")
 
     plt.figure(figsize=(7.8, 5.2))
     i = 0
@@ -990,7 +990,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.title(f"C/O and CO partitioning")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(f"{analysis_dir}/final_c_o_profiles.png")
+    savefig(f"{analysis_dir}/final_c_o_profiles.pdf")
     
     plt.figure(figsize=(7.8, 5.2))
 
@@ -1012,7 +1012,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.title(f"Volatile fraction partitioning")#, snapshot {snap_index}")
     plt.legend(loc="upper left", ncol=2,)
     plt.grid(True, which="both",)
-    savefig(f"{analysis_dir}/final_o_frac_profiles.png")
+    savefig(f"{analysis_dir}/final_o_frac_profiles.pdf")
     
     plt.figure(figsize=(7.8, 5.2))
     this_color_list = color_list[:]
@@ -1033,7 +1033,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.title(f"Volatile fraction partitioning")#, snapshot {snap_index}")
     plt.legend(loc="upper left", ncol=2,)
     plt.grid(True, which="both",)
-    savefig(f"{analysis_dir}/final_c_frac_profiles.png")
+    savefig(f"{analysis_dir}/final_c_frac_profiles.pdf")
 
     snow_cols = [c for c in df.columns if c.startswith("snow_surface_z_over_r_")]
     if not plot_entrap_surface:
@@ -1056,7 +1056,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
         plt.title(f"Modeled release surfaces")#, snapshot {snap_index}")
         plt.legend(ncols=2, fontsize=8)
         plt.grid(True, which="both", alpha=0.3)
-        savefig(f"{analysis_dir}/final_snow_surfaces.png")
+        savefig(f"{analysis_dir}/final_snow_surfaces.pdf")
 
     release_cols = [c for c in df.columns if c.startswith("dM")]
     if release_cols:
@@ -1073,7 +1073,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
         plt.title(f"Ice mass release")#, snapshot {snap_index}")
         plt.legend(ncols=2, fontsize=8)
         plt.grid(True, which="both", alpha=0.3)
-        savefig(f"{analysis_dir}/ice_release.png")
+        savefig(f"{analysis_dir}/ice_release.pdf")
 
 
     co_pure = df["CO_pure_ice_pebble"] + df["CO_pure_ice_small"]
@@ -1091,7 +1091,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.title(f"CO ices")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(f"{analysis_dir}/co_sigmas.png")
+    savefig(f"{analysis_dir}/co_sigmas.pdf")
 
     co2_tot = df["CO2_pure_ice_small"] + df["CO2_pure_ice_pebble"] + df["CO2_at_H2O_ice_small"] + df["CO2_at_H2O_ice_pebble"]
     h2o_tot = df["H2O_ice_small"] + df["H2O_ice_pebble"]
@@ -1104,7 +1104,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.title(f"CO@X/X total")#, snapshot {snap_index}")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(f"{analysis_dir}/co_trapping_capacity.png")
+    savefig(f"{analysis_dir}/co_trapping_capacity.pdf")
 
 
     floor = 1e-30
@@ -1146,7 +1146,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.title(f"CO trapping capacity")#"snap_index}")
     plt.legend()
     plt.grid(True, which="both", alpha=0.3)
-    savefig(f"{analysis_dir}/co_trapping_capacity_mass_ratio.png")
+    savefig(f"{analysis_dir}/co_trapping_capacity_mass_ratio.pdf")
 
 
     plt.figure(figsize=(9, 5))
@@ -1159,7 +1159,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     plt.title(f"CO trapping capacity")#, snapshot {snap_index}")
     plt.legend()
     plt.grid(True, which="both", alpha=0.3)
-    savefig(f"{analysis_dir}/co_trapping_capacity_mol_ratio.png")
+    savefig(f"{analysis_dir}/co_trapping_capacity_mol_ratio.pdf")
     
     if "backreaction_A" in df:
         plt.figure(figsize=(9, 5))
@@ -1171,7 +1171,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
         plt.title(f"Backreaction Coefficients")#, snapshot {snap_index}")
         plt.legend()
         plt.grid(True, which="both", alpha=0.3)
-        savefig(f"{analysis_dir}/backreact_coeffs.png")
+        savefig(f"{analysis_dir}/backreact_coeffs.pdf")
         
     if "epsilon_pebble" in df:
         plt.figure(figsize=(9, 5))
@@ -1183,7 +1183,7 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
         plt.title(f"Midplane dust-to-gas ratio")#, snapshot {snap_index}")
         plt.legend()
         plt.grid(True, which="both", alpha=0.3)
-        savefig(f"{analysis_dir}/epsilon_profiles.png")
+        savefig(f"{analysis_dir}/epsilon_profiles.pdf")
 
 
 # -----------------------------
@@ -1249,7 +1249,7 @@ def pcolormesh_time_radius_computed(
 def make_paper_time_radius_co_partitioning(
     snapshots,
     analysis_dir,
-    fname="paper_time_radius_co_partitioning.png",
+    fname="paper_time_radius_co_partitioning.pdf",
     cmap="magma",
     total_floor_fraction=1.0e-10,
 ):
@@ -1495,7 +1495,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
     targets = [
         (
             "co_hidden_fraction_budget",
-            "time_radius_hidden_co_fraction.png",
+            "time_radius_hidden_co_fraction.pdf",
             "Matrix-associated CO fraction",
             "matrix-associated CO fraction",
             False,
@@ -1503,7 +1503,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "co_gas_fraction_budget",
-            "time_radius_gas_co_fraction.png",
+            "time_radius_gas_co_fraction.pdf",
             "Gas-phase CO fraction",
             "gas CO fraction",
             False,
@@ -1511,7 +1511,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "co_pebble_fraction_budget",
-            "time_radius_co_pebble_fraction.png",
+            "time_radius_co_pebble_fraction.pdf",
             "Pebble-carried CO fraction",
             "pebble CO fraction",
             False,
@@ -1519,7 +1519,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "co_small_fraction_budget",
-            "time_radius_co_small_fraction.png",
+            "time_radius_co_small_fraction.pdf",
             "Small-grain-carried CO fraction",
             "small-grain CO fraction",
             False,
@@ -1527,7 +1527,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "pebble_volatile_ice_budget",
-            "time_radius_pebble_volatile_ice.png",
+            "time_radius_pebble_volatile_ice.pdf",
             "Pebble volatile ice surface density",
             r"pebble volatile ice [g cm$^{-2}$]",
             True,
@@ -1535,7 +1535,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "small_volatile_ice_budget",
-            "time_radius_small_volatile_ice.png",
+            "time_radius_small_volatile_ice.pdf",
             "Small-grain volatile ice surface density",
             r"small-grain volatile ice [g cm$^{-2}$]",
             True,
@@ -1543,7 +1543,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "pebble_fraction_of_solid_volatile_ice",
-            "time_radius_pebble_fraction_solid_volatile.png",
+            "time_radius_pebble_fraction_solid_volatile.pdf",
             "Pebble fraction of solid volatile ice",
             "pebble fraction",
             False,
@@ -1551,7 +1551,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "small_fraction_of_solid_volatile_ice",
-            "time_radius_small_fraction_solid_volatile.png",
+            "time_radius_small_fraction_solid_volatile.pdf",
             "Small-grain fraction of solid volatile ice",
             "small-grain fraction",
             False,
@@ -1559,7 +1559,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "C_over_O_pebble_masked",
-            "time_radius_pebble_c_o_masked.png",
+            "time_radius_pebble_c_o_masked.pdf",
             "Pebble volatile C/O",
             "pebble volatile C/O",
             True,
@@ -1567,7 +1567,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "C_over_O_small_masked",
-            "time_radius_small_c_o_masked.png",
+            "time_radius_small_c_o_masked.pdf",
             "Small-grain volatile C/O",
             "small-grain volatile C/O",
             True,
@@ -1575,7 +1575,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "C_over_H_pebble_masked",
-            "time_radius_pebble_c_h_masked.png",
+            "time_radius_pebble_c_h_masked.pdf",
             "Pebble volatile C/H",
             "pebble volatile C/H",
             True,
@@ -1583,7 +1583,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "C_over_H_small_masked",
-            "time_radius_small_c_h_masked.png",
+            "time_radius_small_c_h_masked.pdf",
             "Small-grain volatile C/H",
             "small-grain volatile C/H",
             True,
@@ -1591,7 +1591,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "O_over_H_pebble_masked",
-            "time_radius_pebble_o_h_masked.png",
+            "time_radius_pebble_o_h_masked.pdf",
             "Pebble volatile O/H",
             "pebble volatile O/H",
             True,
@@ -1599,7 +1599,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "O_over_H_small_masked",
-            "time_radius_small_o_h_masked.png",
+            "time_radius_small_o_h_masked.pdf",
             "Small-grain volatile O/H",
             "small-grain volatile O/H",
             True,
@@ -1607,7 +1607,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "co_gas_budget",
-            "time_radius_co_gas_surface_density.png",
+            "time_radius_co_gas_surface_density.pdf",
             "CO gas surface density",
             r"CO gas [g cm$^{-2}$]",
             True,
@@ -1615,7 +1615,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
         ),
         (
             "co_hidden_total_budget",
-            "time_radius_hidden_co_surface_density.png",
+            "time_radius_hidden_co_surface_density.pdf",
             "Hidden CO surface density",
             r"hidden CO [g cm$^{-2}$]",
             True,
@@ -1641,19 +1641,19 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
     release_rate_targets = [
         (
             "Mdot_dlnr_CO_pure",
-            "time_radius_Mdot_dlnr_CO_pure.png",
+            "time_radius_Mdot_dlnr_CO_pure.pdf",
             "Pure CO release rate",
             r"$d\dot{M}_{\rm CO,pure}/d\ln r$ [g s$^{-1}$]",
         ),
         (
             "Mdot_dlnr_CO_at_CO2",
-            "time_radius_Mdot_dlnr_CO_at_CO2.png",
+            "time_radius_Mdot_dlnr_CO_at_CO2.pdf",
             "CO@CO2 release rate",
             r"$d\dot{M}_{\rm CO@CO_2}/d\ln r$ [g s$^{-1}$]",
         ),
         (
             "Mdot_dlnr_CO_at_H2O",
-            "time_radius_Mdot_dlnr_CO_at_H2O.png",
+            "time_radius_Mdot_dlnr_CO_at_H2O.pdf",
             "CO@H2O release rate",
             r"$d\dot{M}_{\rm CO@H_2O}/d\ln r$ [g s$^{-1}$]",
         ),
@@ -1710,7 +1710,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
     plt.title("Cumulative gross volatile-ice reservoir loss")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(analysis_dir / "total_ice_release_dM_dlnr.png")
+    savefig(analysis_dir / "total_ice_release_dM_dlnr.pdf")
 
     plt.figure(figsize=(9, 5))
     i = 0
@@ -1734,7 +1734,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
     plt.title("Cumulative gross volatile-ice reservoir loss")
     plt.legend(ncols=2, fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(analysis_dir / "cumulative_volatile_ice_reservoir_loss.png")
+    savefig(analysis_dir / "cumulative_volatile_ice_reservoir_loss.pdf")
 
     # ------------------------------------------------------------
     # Cumulative net gas-phase CO change
@@ -1759,7 +1759,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
     plt.title("Cumulative net gas-phase CO change")
     plt.legend(fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(analysis_dir / "total_co_gas_change_dM_dlnr.png")
+    savefig(analysis_dir / "total_co_gas_change_dM_dlnr.pdf")
 
     plt.figure(figsize=(9, 5))
     plt.semilogx(r, cumulative_gas / MEARTH, label="net CO gas change", color=color_list[0])
@@ -1769,7 +1769,7 @@ def make_time_radius_plots(snapshots: Sequence[SnapshotInfo], analysis_dir: Path
     plt.title("Cumulative net gas-phase CO change")
     plt.legend(fontsize=8)
     plt.grid(True, which="both", alpha=0.3)
-    savefig(analysis_dir / "total_co_gas_change_dM.png")
+    savefig(analysis_dir / "total_co_gas_change_dM.pdf")
 
 
 # -----------------------------
@@ -2322,7 +2322,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     ax.legend()
     ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
-    savefig(f"{analysis_dir}/size_sigma.png")
+    savefig(f"{analysis_dir}/size_sigma.pdf")
 
     fig, ax = plt.subplots(figsize=(7.6, 5.4))
     
@@ -2335,7 +2335,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     ax.legend()
     ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
-    savefig(f"{analysis_dir}/size_c_o.png")
+    savefig(f"{analysis_dir}/size_c_o.pdf")
     
     fig, ax = plt.subplots(figsize=(7.6, 5.4))
     
@@ -2348,7 +2348,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     ax.legend()
     ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
-    savefig(f"{analysis_dir}/size_c_h.png")
+    savefig(f"{analysis_dir}/size_c_h.pdf")
     
     fig, ax = plt.subplots(figsize=(7.6, 5.4))
     
@@ -2361,7 +2361,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     ax.legend()
     ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
-    savefig(f"{analysis_dir}/size_o_h.png")
+    savefig(f"{analysis_dir}/size_o_h.pdf")
 
     solid_volatile = Sigma_pebble_volatile + Sigma_small_volatile
     
@@ -2380,7 +2380,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     ax.legend()
     ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
-    savefig(f"{analysis_dir}/size_frac.png")
+    savefig(f"{analysis_dir}/size_frac.pdf")
 
     co_gas_frac = bud_r["co_gas_fraction"]
     co_hidden_frac = bud_r["co_hidden_fraction"]
@@ -2401,7 +2401,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     ax.legend()
     ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
-    savefig(f"{analysis_dir}/co_partition.png")
+    savefig(f"{analysis_dir}/co_partition.pdf")
 
 # -----------------------------
 # Paper-facing summary plots
@@ -2490,7 +2490,7 @@ def make_paper_final_1d_summary(df: pd.DataFrame, analysis_dir: Path, snap_index
     ax.legend(frameon=True, fontsize=8)
     ax.grid(True, which="both", alpha=0.25)
 
-    fig.savefig(Path(analysis_dir) / "paper_radial_co_and_carrier_composition.png", dpi=240)
+    fig.savefig(Path(analysis_dir) / "paper_radial_co_and_carrier_composition.pdf", dpi=240)
     plt.close(fig)
 
 
@@ -2589,7 +2589,7 @@ def make_paper_cumulative_release_profile(
     ax.legend(frameon=True)
     ax.grid(True, which="both", alpha=0.25)
     fig.tight_layout()
-    fig.savefig(Path(analysis_dir) / "paper_cumulative_release_profile.png", dpi=240)
+    fig.savefig(Path(analysis_dir) / "paper_cumulative_release_profile.pdf", dpi=240)
     plt.close(fig)
 
 
@@ -2725,7 +2725,7 @@ def make_paper_2d_morphology(
         cb = fig.colorbar(mesh, ax=ax)
         cb.set_label(label)
 
-    fig.savefig(Path(analysis_dir) / "paper_fiducial_morphology.png", dpi=240)
+    fig.savefig(Path(analysis_dir) / "paper_fiducial_morphology.pdf", dpi=240)
     plt.close(fig)
 
 def make_runtime_profile_plots(df: pd.DataFrame, analysis_dir: Path) -> None:
@@ -2749,7 +2749,7 @@ def make_runtime_profile_plots(df: pd.DataFrame, analysis_dir: Path) -> None:
         axes[1].set_title("Cumulative gross capacity rejection"); axes[1].set_ylabel(r"$dM_{\rm cap,reject}^{\rm gross}/d\ln r$ [$M_\oplus$]")
         for ax in axes:
             ax.set_xlabel("Radius [au]"); ax.legend(fontsize=8); ax.grid(True, which="both", alpha=0.25)
-        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "capacity_rejection_profile.png", dpi=220); plt.close(fig)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "capacity_rejection_profile.pdf", dpi=220); plt.close(fig)
 
     needed = ["cum_dM_CO_gas_gain", "cum_dM_CO_gas_loss", "cum_dM_CO_gas"]
     if any(c in df.columns for c in needed):
@@ -2758,7 +2758,7 @@ def make_runtime_profile_plots(df: pd.DataFrame, analysis_dir: Path) -> None:
             if c in df.columns: ax.semilogx(r, df[c].to_numpy(dtype=float) / np.maximum(dlnr, EPS) / MEARTH, label=label, linestyle=ls, linewidth=2)
         ax.axhline(0.0, color="0.5", linewidth=0.8); ax.set_xlabel("Radius [au]"); ax.set_ylabel(r"$dM_{\rm CO,phase}^{\rm cum}/d\ln r$ [$M_\oplus$]")
         ax.set_title("Cumulative CO phase exchange"); ax.legend(); ax.grid(True, which="both", alpha=0.25)
-        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "co_phase_exchange_profile.png", dpi=220); plt.close(fig)
+        fig.tight_layout(); fig.savefig(Path(analysis_dir) / "co_phase_exchange_profile.pdf", dpi=220); plt.close(fig)
 
 
 # -----------------------------
