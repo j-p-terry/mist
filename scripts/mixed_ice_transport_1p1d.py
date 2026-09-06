@@ -17,11 +17,14 @@ What this does
         CO2 pure ice
         CO2@H2O ice
         H2O ice
+- Optional no-resequestration sensitivity: inherited matrix-associated ice can
+  sublimate, but released vapor cannot re-enter a mixed reservoir; it may only
+  remain gas or recondense as pure ice where thermally allowed.
 
 The "1+1D" approximation
 ------------------------
 The evolved variables are radial surface densities Sigma_i(r,t). At every radius
-we compute a vertical disk column, snow surfaces, and carrier-weighted survival
+compute a vertical disk column, snow surfaces, and carrier-weighted survival
 fractions. Those vertically averaged survival fractions determine the phase
 source terms. Optional 2D snapshot files reconstruct where the reservoirs would
 sit vertically, but the transport itself remains 1D radial.
@@ -281,6 +284,10 @@ DEFAULTS: Dict[str, Any] = {
         # re-equilibrated according to the prescribed reservoir fractions.
         "phase_partition": {
             "preserve_carrier_history": True,
+            # If False, inherited matrix-associated reservoirs may only be lost;
+            # vapor can recondense as pure ice but cannot be re-sequestered into
+            # CO@CO2, CO@H2O, or CO2@H2O after t=0.
+            "allow_resequestration": True,
         },
         "backreaction": {
             "enabled": False,
@@ -455,8 +462,20 @@ def validate_params(p: Dict[str, Any]) -> None:
     if p["volatiles"]["phase_relaxation_time_yr"] <= 0:
         raise ValueError("volatiles.phase_relaxation_time_yr must be positive.")
 
-    if p["dust"]["phase_partition"].get("preserve_carrier_history") not in {True, False}:
+    phase_partition_cfg = p["dust"]["phase_partition"]
+    if phase_partition_cfg.get("preserve_carrier_history") not in {True, False}:
         raise ValueError("dust.phase_partition.preserve_carrier_history must be boolean.")
+    if phase_partition_cfg.get("allow_resequestration", True) not in {True, False}:
+        raise ValueError("dust.phase_partition.allow_resequestration must be boolean.")
+    if (
+        not bool(phase_partition_cfg.get("allow_resequestration", True))
+        and not bool(phase_partition_cfg.get("preserve_carrier_history", True))
+    ):
+        raise ValueError(
+            "No-resequestration mode requires "
+            "dust.phase_partition.preserve_carrier_history: true, because the "
+            "inherited matrix identity must be retained explicitly."
+        )
 
     br = p["dust"].get("backreaction", {})
     if isinstance(br, dict) and br.get("epsilon_mode", "midplane") not in {"midplane", "column"}:
@@ -757,6 +776,7 @@ def apply_trapping_capacity_limits(
     targets: Dict[str, np.ndarray],
     params: Dict[str, Any],
     diagnostics: Optional[Dict[str, np.ndarray]] = None,
+    force_excess_destination: Optional[str] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Enforce finite host-matrix capacity for mixed ice reservoirs.
@@ -808,7 +828,11 @@ def apply_trapping_capacity_limits(
     if not bool(cfg.get("enabled", False)):
         return targets
 
-    excess_destination = str(cfg.get("excess_destination", "gas"))
+    excess_destination = (
+        str(force_excess_destination)
+        if force_excess_destination is not None
+        else str(cfg.get("excess_destination", "gas"))
+    )
     allowed_destinations = {"gas", "next_available_reservoir"}
     if excess_destination not in allowed_destinations:
         raise ValueError(
@@ -1958,6 +1982,176 @@ def phase_targets_w_history(
     return targets
 
 
+
+def phase_targets_w_history_no_resequestration(
+    state: Dict[str, np.ndarray],
+    vertical: Dict[str, Any],
+    params: Dict[str, Any],
+    capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
+) -> Dict[str, np.ndarray]:
+    """
+    Carrier-history-preserving targets with *no re-sequestration*.
+
+    This sensitivity model represents an inherited mixed-ice inventory that can
+    be transported and thermally released, but cannot be rebuilt after release.
+
+    Specifically:
+      - existing CO@CO2, CO@H2O, and CO2@H2O remain in the same reservoir while
+        that reservoir is locally survivable;
+      - those matrix-associated reservoirs can only stay constant or decrease
+        during a phase update -- they never receive material from gas or from a
+        different solid reservoir;
+      - gas-phase CO and CO2 may still recondense as their *pure* ices where the
+        pure ice is stable, using dust.volatile_carrier_fractions to split new
+        condensate between pebbles and small grains;
+      - H2O continues to undergo ordinary gas/ice phase exchange;
+      - finite host-capacity limits are still enforced on inherited mixed ice.
+        Any capacity-rejected guest is forced to gas so the capacity operator
+        cannot accidentally create a new matrix-associated reservoir.
+
+    With initialize_phase_equilibrium=true, the configured cold-limit mixed-ice
+    fractions are therefore interpreted as the inherited t=0 inventory.
+    """
+
+    targets = {name: np.zeros_like(next(iter(state.values()))) for name in ALL_FIELDS}
+
+    # Refractory solids do not phase change.
+    for carrier in CARRIERS:
+        targets[ref_field(carrier)] = state[ref_field(carrier)].copy()
+
+    cf = params["dust"]["volatile_carrier_fractions"]
+    ms = vertical["mean_survival"]
+
+    cf_sum = sum(float(cf[carrier]) for carrier in CARRIERS)
+    if cf_sum <= 0.0:
+        raise ValueError("dust.volatile_carrier_fractions must have positive sum.")
+    w_carrier = {carrier: float(cf[carrier]) / cf_sum for carrier in CARRIERS}
+
+    # ------------------------------------------------------------------
+    # CO: inherited matrix-associated reservoirs may only be lost.
+    # Shared CO vapor may recondense only as pure CO ice.
+    # ------------------------------------------------------------------
+    CO_total = total_CO(state)
+    CO_solid_target_sum = np.zeros_like(CO_total)
+
+    for carrier in CARRIERS:
+        # Preserve matrix identity and forbid any gain into these reservoirs.
+        targets[co_at_co2_field(carrier)] = (
+            ms[carrier]["CO_at_CO2"] * state[co_at_co2_field(carrier)]
+        )
+        targets[co_at_h2o_field(carrier)] = (
+            ms[carrier]["CO_at_H2O"] * state[co_at_h2o_field(carrier)]
+        )
+
+        # Existing pure CO remains carrier-associated; shared vapor can condense
+        # onto either carrier according to the configured condensation weights.
+        pure_available = (
+            state[co_pure_field(carrier)]
+            + w_carrier[carrier] * state["CO_gas"]
+        )
+        targets[co_pure_field(carrier)] = (
+            ms[carrier]["CO_pure"] * pure_available
+        )
+
+        CO_solid_target_sum += (
+            targets[co_pure_field(carrier)]
+            + targets[co_at_co2_field(carrier)]
+            + targets[co_at_h2o_field(carrier)]
+        )
+
+    targets["CO_gas"] = np.maximum(CO_total - CO_solid_target_sum, 0.0)
+
+    # ------------------------------------------------------------------
+    # CO2: inherited CO2@H2O may only be lost. Shared CO2 vapor may
+    # recondense only as pure CO2 ice.
+    # ------------------------------------------------------------------
+    CO2_total = total_CO2(state)
+    CO2_solid_target_sum = np.zeros_like(CO2_total)
+
+    for carrier in CARRIERS:
+        targets[co2_at_h2o_field(carrier)] = (
+            ms[carrier]["CO2_at_H2O"] * state[co2_at_h2o_field(carrier)]
+        )
+
+        pure_available = (
+            state[co2_pure_field(carrier)]
+            + w_carrier[carrier] * state["CO2_gas"]
+        )
+        targets[co2_pure_field(carrier)] = (
+            ms[carrier]["CO2_pure"] * pure_available
+        )
+
+        CO2_solid_target_sum += (
+            targets[co2_pure_field(carrier)]
+            + targets[co2_at_h2o_field(carrier)]
+        )
+
+    targets["CO2_gas"] = np.maximum(CO2_total - CO2_solid_target_sum, 0.0)
+
+    # ------------------------------------------------------------------
+    # H2O: ordinary gas/ice phase exchange; H2O is a host, not a guest
+    # reservoir in this model.
+    # ------------------------------------------------------------------
+    H2O_total = total_H2O(state)
+    H2O_solid_target_sum = np.zeros_like(H2O_total)
+
+    for carrier in CARRIERS:
+        H2O_available = (
+            state[h2o_field(carrier)]
+            + w_carrier[carrier] * state["H2O_gas"]
+        )
+        targets[h2o_field(carrier)] = (
+            ms[carrier]["H2O"] * H2O_available
+        )
+        H2O_solid_target_sum += targets[h2o_field(carrier)]
+
+    targets["H2O_gas"] = np.maximum(H2O_total - H2O_solid_target_sum, 0.0)
+
+    # Capacity enforcement is still physically useful for the inherited mixed
+    # reservoirs. Force rejected guest material to gas so this operator cannot
+    # repopulate another matrix-associated reservoir in no-resequestration mode.
+    targets = apply_trapping_capacity_limits(
+        targets,
+        params,
+        diagnostics=capacity_diagnostics,
+        force_excess_destination="gas",
+    )
+
+    return targets
+
+
+def build_phase_targets(
+    state: Dict[str, np.ndarray],
+    vertical: Dict[str, Any],
+    params: Dict[str, Any],
+    capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
+) -> Dict[str, np.ndarray]:
+    """Select the configured phase-target model."""
+    phase_cfg = params["dust"]["phase_partition"]
+
+    if not bool(phase_cfg.get("allow_resequestration", True)):
+        return phase_targets_w_history_no_resequestration(
+            state,
+            vertical,
+            params,
+            capacity_diagnostics=capacity_diagnostics,
+        )
+
+    if bool(phase_cfg["preserve_carrier_history"]):
+        return phase_targets_w_history(
+            state,
+            vertical,
+            params,
+            capacity_diagnostics=capacity_diagnostics,
+        )
+
+    return phase_targets(
+        state,
+        vertical,
+        params,
+        capacity_diagnostics=capacity_diagnostics,
+    )
+
 def set_phase_equilibrium(
     state: Dict[str, np.ndarray],
     vertical: Dict[str, Any],
@@ -1965,14 +2159,9 @@ def set_phase_equilibrium(
     capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
     """Set the state to its phase target and optionally record initial cap rejection."""
-    if params["dust"]["phase_partition"]["preserve_carrier_history"]:
-        targets = phase_targets_w_history(
-            state, vertical, params, capacity_diagnostics=capacity_diagnostics
-        )
-    else:
-        targets = phase_targets(
-            state, vertical, params, capacity_diagnostics=capacity_diagnostics
-        )
+    targets = build_phase_targets(
+        state, vertical, params, capacity_diagnostics=capacity_diagnostics
+    )
     for name in ALL_FIELDS:
         state[name] = targets[name]
     return state
@@ -1990,14 +2179,9 @@ def phase_relaxation_step(
     relax_fraction = 1.0 - fac
     capacity_target_diag: Dict[str, np.ndarray] = {}
 
-    if params["dust"]["phase_partition"]["preserve_carrier_history"]:
-        targets = phase_targets_w_history(
-            state, vertical, params, capacity_diagnostics=capacity_target_diag
-        )
-    else:
-        targets = phase_targets(
-            state, vertical, params, capacity_diagnostics=capacity_target_diag
-        )
+    targets = build_phase_targets(
+        state, vertical, params, capacity_diagnostics=capacity_target_diag
+    )
 
     for name in ALL_FIELDS:
         if name.startswith("ref_solid"):
@@ -2641,10 +2825,9 @@ def write_outputs(
     br_diag: Dict[str, np.ndarray], runtime: Dict[str, Any],
 ) -> None:
     capacity_current: Dict[str, np.ndarray] = {}
-    if params["dust"]["phase_partition"]["preserve_carrier_history"]:
-        phase_targets_w_history(state, vertical, params, capacity_diagnostics=capacity_current)
-    else:
-        phase_targets(state, vertical, params, capacity_diagnostics=capacity_current)
+    build_phase_targets(
+        state, vertical, params, capacity_diagnostics=capacity_current
+    )
     runtime["capacity_current"] = capacity_current
     output_fields = dict(release)
     output_fields.update(capacity_output_fields(runtime["capacity_initial"], runtime["capacity_cumulative"], grid, current=capacity_current))

@@ -106,6 +106,12 @@ dust:
     # fractions still re-equilibrate according to solid_fractions.
     preserve_carrier_history: true
 
+    # Simple inherited-trapping sensitivity: matrix-associated reservoirs exist
+    # initially according to solid_fractions, but after t=0 they can only be
+    # depleted by phase release. Released vapor cannot be sequestered again into
+    # CO@CO2, CO@H2O, or CO2@H2O; it may remain gas or recondense as pure ice.
+    allow_resequestration: false
+
   # Backreaction
   backreaction:
     enabled: false
