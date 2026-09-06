@@ -23,6 +23,7 @@ Generate YAMLs:
         --base-yaml example_mist_params.yaml \
         --sweep-dir sweep_yamls \
         --run-root sweep_outputs \
+        --duration 250.0 \
         --model-script mixed_ice_transport_1p1d.py\
         --save-2d
 
@@ -384,6 +385,26 @@ def make_run_specs() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "high_res",
+            "group": "resolution",
+            "description": "High-resolution fiducial mixed-ice model.",
+            "overrides": {
+                "grid": {
+                    "ncells": 800,
+                }
+            },
+        },
+        {
+            "name": "low_res",
+            "group": "resolution",
+            "description": "Low-resolution fiducial mixed-ice model.",
+            "overrides": {
+                "grid": {
+                    "ncells": 200,
+                }
+            },
+        },
+        {
             "name": "ice_co2_trap",
             "group": "ice",
             "description": "CO mostly trapped in CO2-rich ice.",
@@ -424,6 +445,16 @@ def make_run_specs() -> List[Dict[str, Any]]:
                             "at_H2O": 0.50,
                         }
                     },
+                }
+            },
+        },
+        {
+            "name": "irreversible",
+            "group": "ice",
+            "description": "No resequestration of mixed ices.",
+            "overrides": {
+                "phase_partition": {
+                    "allow_resequestration": False,
                 }
             },
         },
@@ -1356,7 +1387,8 @@ ICE_SUITE_NAMES = [
     "cond_equal_0p50",
     "vertical_Tatm_3p0",
     "vertical_Tatm_1p2",
-    "st_pebble_0p003"
+    "st_pebble_0p003",
+    "release_different",
 ]
 
 RUN_LABELS_SINGLE = {
@@ -3047,6 +3079,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run-root", default="sweep_outputs", type=str, help="Root directory for model outputs.")
     p.add_argument("--model-script", default="mixed_ice_transport_1p1d.py", type=str, help="Model script to use in commands file.")
     p.add_argument("--save-2d", action="store_true", help="Keep 2D npz outputs enabled for all sweep runs. Default disables 2D output.")
+    p.add_argument("--duration", default=250.0, type=float, help="Duration of sweep simulations in kyr")
 
     p = sub.add_parser("analyze", help="Analyze completed sweep outputs.")
     p.add_argument("--sweep-dir", default="sweep_yamls", type=str, help="Directory containing sweep_manifest.csv.")
@@ -3059,7 +3092,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-script", default="mixed_ice_transport_1p1d.py", type=str, help="Model script to use in commands file.")
     p.add_argument("--analysis-dir", default="sweep_analysis", type=str, help="Output directory for plots and tables.")
     p.add_argument("--save-2d", action="store_true", help="Keep 2D npz outputs enabled for all sweep runs. Default disables 2D output.")
-    p.add_argument("--duration", default=250.0, type=float, help="Duration of sweep simulations in kyr")
 
     return parser.parse_args()
 
