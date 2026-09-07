@@ -1432,7 +1432,7 @@ RUN_LABELS_MULTILINE = {
     "vdiff_h2o_trap_off": "H$_2$O-rich\nno vapor diffusion",
     "release_cool": "cool\nrelease",
     "release_warm": "warm\nrelease",
-    "release_different": "different\nrelease",
+    "release_different": "volcano\nrelease",
     "cond_equal_0p50": "equal\ntrapping",
     "vertical_Tatm_3p0": "hot\natm.",
     "vertical_Tatm_1p2": "cold\natm.",
@@ -1761,6 +1761,7 @@ def plot_paper_ice_suite_summary(
         ax.set_xticklabels([pretty_run_label(n, multiline=True) for n in release_df["run_name"]], rotation=0)
         ax.set_ylabel(r"C/O Ratio at radius")
         ax.set_title(f"{'Pebble' if CARRIER == 'peb' else 'Small-grain'} C/O Ratio")
+        ax.set_ylim(0., 0.76)
         ax.legend(
             loc="upper center",
             bbox_to_anchor=(0.5, 1.14),
@@ -2697,7 +2698,7 @@ TABLE_RUN_LABELS = {
     "vdiff_h2o_trap_off": r"H$_2$O-rich trapping, no vapor diffusion",
     "release_cool": "cool release",
     "release_warm": "warm release",
-    "release_different": "different release",
+    "release_different": "volcano release",
 }
 
 
