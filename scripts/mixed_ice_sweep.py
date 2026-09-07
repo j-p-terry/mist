@@ -98,10 +98,11 @@ import argparse
 import csv
 import math
 import os
+from re import L
 import shlex
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 try:
@@ -302,7 +303,7 @@ def savefig(path: Path, dpi: int = 200) -> None:
 # ---------------------------------------------------------------------
 def make_run_specs() -> List[Dict[str, Any]]:
     """
-    Compact 21-run sweep.
+    Compact 24-run sweep.
 
     Includes:
       - 5 ice-composition cases, including fiducial
@@ -1370,28 +1371,26 @@ def include_fiducial(df: pd.DataFrame, group: str) -> pd.DataFrame:
     return df[(df["group"] == group) | (df["run_name"] == "fiducial")].copy()
 
 
-
-
 # ---------------------------------------------------------------------
 # Paper-ready plot helpers
 # ---------------------------------------------------------------------
 ICE_SUITE_NAMES = [
+    "fiducial",
     "ice_pure_snowline",
     "ice_low_trap",
-    "fiducial",
     "ice_co2_trap",
     "ice_h2o_trap",
-    "vdiff_fiducial_off",
-    "fiducial_w_backreact",
-    "uncapped",
-    "cond_equal_0p50",
     "vertical_Tatm_3p0",
     "vertical_Tatm_1p2",
-    "st_pebble_0p003",
+    "cond_equal_0p50",
     "release_different",
+    "vdiff_fiducial_off",
     "irreversible",
-    "high_res",
-    "low_res",
+    "st_pebble_0p003",
+    "fiducial_w_backreact",
+    "uncapped",
+    # "high_res",
+    # "low_res",
 ]
 
 RUN_LABELS_SINGLE = {
@@ -1471,6 +1470,109 @@ def apply_paper_axis_style(ax: plt.Axes) -> None:
     ax.grid(True, alpha=0.25)
     ax.tick_params(direction="out")
 
+def final_radial_c_to_o_budget(df: pd.DataFrame,    
+                           names: Optional[Sequence[str]] = None,
+  ) -> pd.DataFrame:
+
+    """
+    Build radial profiles for total small-grain/pebble C/O.
+    """
+    
+    if names is None:
+        names = ICE_SUITE_NAMES
+
+    sub = ordered(df, names)
+    rows: List[Dict[str, Any]] = []
+    
+    longest = 0
+    
+    for _, row in sub.iterrows():
+        run_name = row["run_name"]
+        snaps = snapshot_paths(Path(row["output_dir"]))
+        if not snaps:
+            continue
+
+        final_df = read_snapshot(snaps[-1])
+        radii = final_df["r_au"].to_numpy(dtype=float)
+
+        co_peb = col(final_df, "CO_pure_ice_pebble") \
+                + col(final_df, "CO_at_CO2_ice_pebble") \
+                + col(final_df, "CO_at_H2O_ice_pebble")
+        co_sm = col(final_df, "CO_pure_ice_small") \
+                + col(final_df, "CO_at_CO2_ice_small") \
+                + col(final_df, "CO_at_H2O_ice_small")
+        co2_peb = col(final_df, "CO2_pure_ice_pebble") \
+                + col(final_df, "CO2_at_H2O_ice_pebble")
+        co2_sm = col(final_df, "CO2_pure_ice_small") \
+                + col(final_df, "CO2_at_H2O_ice_small")
+        h2o_peb = col(final_df, "H2O_ice_pebble")
+        h2o_sm = col(final_df, "H2O_ice_small")
+
+
+        n_co_peb = co_peb / MW["CO"]
+        n_co_sm  = co_sm / MW["CO"]
+        n_co2_peb = co2_peb / MW["CO2"]
+        n_co2_sm = co2_sm / MW["CO2"]
+        n_h2o_peb = h2o_peb / MW["H2O"]
+        n_h2o_sm = h2o_sm / MW["H2O"]
+        
+        C_peb = n_co_peb + n_co2_peb
+        O_peb = n_co_peb + 2.0 * n_co2_peb + n_h2o_peb
+        H_peb = 2.0 * n_h2o_peb
+        
+        C_sm = n_co_sm + n_co2_sm
+        O_sm = n_co_sm + 2.0 * n_co2_sm + n_h2o_sm
+        H_sm = 2.0 * n_h2o_sm
+        
+        CO_peb = C_peb / np.maximum(O_peb, EPS)
+        CO_sm = C_sm / np.maximum(O_sm, EPS)
+        
+        CH_peb = C_peb / np.maximum(H_peb, EPS)
+        CH_sm = C_sm / np.maximum(H_sm, EPS)
+        
+        if len(radii) > longest:
+            longest = len(radii)
+        
+        rows.append(
+            {
+                # "run_name": run_name,
+                # "group": row.get("group", ""),
+                f"CO_peb_{run_name}": CO_peb,
+                f"CO_sm_{run_name}": CO_sm,
+                f"CH_peb_{run_name}": CH_peb,
+                f"CH_sm_{run_name}": CH_sm,
+                f"r_{run_name}": radii
+            }
+        )
+        
+    # ensure same length
+    i = 0
+    df = pd.DataFrame({})
+    for _, run in sub.iterrows():
+        run_name = run["run_name"]
+        if len(rows[i][f"CO_peb_{run_name}"]) < longest:
+            rows[i][f"CO_peb_{run_name}"] = np.pad(rows[i][f"CO_peb_{run_name}"], 
+                                            (0, longest - len(rows[i][f"CO_peb_{run_name}"])), 
+                                            mode="constant", constant_values=np.nan)
+            rows[i][f"CO_sm_{run_name}"] = np.pad(rows[i][f"CO_sm_{run_name}"], 
+                                            (0, longest - len(rows[i][f"CO_sm_{run_name}"])), 
+                                            mode="constant", constant_values=np.nan)
+            rows[i][f"CH_peb_{run_name}"] = np.pad(rows[i][f"CH_peb_{run_name}"], 
+                                            (0, longest - len(rows[i][f"CH_peb_{run_name}"])), 
+                                            mode="constant", constant_values=np.nan)
+            rows[i][f"CH_sm_{run_name}"] = np.pad(rows[i][f"CH_sm_{run_name}"], 
+                                            (0, longest - len(rows[i][f"CH_sm_{run_name}"])), 
+                                            mode="constant", constant_values=np.nan)
+            rows[i][f"r_{run_name}"] = np.pad(rows[i][f"r_{run_name}"], 
+                                        (0, longest - len(rows[i][f"r_{run_name}"])), 
+                                        mode="constant", constant_values=np.nan)
+        for key in rows[i]:
+            df[key] = rows[i][key]
+            
+        i += 1
+
+    return df
+
 
 def final_co_budget_table(
     df: pd.DataFrame,
@@ -1534,6 +1636,7 @@ def plot_paper_ice_suite_summary(
     df: pd.DataFrame,
     analysis_dir: Path,
     names: Optional[Sequence[str]] = None,
+    c_o_radii: Tuple[float, float, float] = (1., 5., 10.),
 ) -> pd.DataFrame:
     """
     Paper-facing two-panel summary:
@@ -1559,7 +1662,7 @@ def plot_paper_ice_suite_summary(
     #     gridspec_kw={"width_ratios": [1.25, 1.0]},
     #     constrained_layout=True,
     # )
-    fig, ax = plt.subplots(figsize=(18, 8))
+    fig, ax = plt.subplots(figsize=(22, 8))
 
     # Plot A: stacked final CO budget.
     x = np.arange(len(budget_df))
@@ -1591,7 +1694,7 @@ def plot_paper_ice_suite_summary(
     plt.close(fig)
 
     # Plot B: median release radii.
-    fig, ax = plt.subplots(figsize=(18, 8))
+    fig, ax = plt.subplots(figsize=(22, 8))
     release_df = ordered(release_df, budget_df["run_name"].tolist())
     x = np.arange(len(release_df))
     w = 0.25
@@ -1626,6 +1729,48 @@ def plot_paper_ice_suite_summary(
 
     fig.savefig(analysis_dir / "paper_ice_release_radius.pdf", dpi=240)
     plt.close(fig)
+    
+    
+    # Plot C: C/O at selected radii.
+    profile_df = final_radial_c_to_o_budget(df, names=names)
+    
+    series = [(c_o_radii[0], -w),
+              (c_o_radii[1], 0.0),
+              (c_o_radii[2], w)
+              ]
+    
+    for CARRIER in ["peb", "sm"]:
+        fig, ax = plt.subplots(figsize=(22, 8))
+        for j, (r, dx) in enumerate(series):
+            for i, RUN in enumerate(names):
+                ratio = profile_df[f"CO_{CARRIER}_{RUN}"]
+                radii = profile_df[f"r_{RUN}"]
+                idx = np.argmin(np.abs(radii - r))
+                ax.bar(
+                    x[i] + dx,
+                    ratio[idx],
+                    width=w,
+                    label=f"R={r} au" if i == 0 else None,
+                    color=COLOR_LIST[j],
+                    edgecolor="black",
+                    linewidth=0.35,
+                )
+
+        # ax.set_yscale("log")
+        ax.set_xticks(x)
+        ax.set_xticklabels([pretty_run_label(n, multiline=True) for n in release_df["run_name"]], rotation=0)
+        ax.set_ylabel(r"C/O Ratio at radius")
+        ax.set_title(f"{'Pebble' if CARRIER == 'peb' else 'Small-grain'} C/O Ratio")
+        ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.14),
+            ncol=4,
+            frameon=True,
+        )
+        ax.grid(True, which="both", axis="y", alpha=0.25)
+        fig.savefig(analysis_dir / f"paper_ice_c_to_o_radii_{CARRIER}.pdf", dpi=240)
+        plt.close(fig)
+    
 
     return budget_df
 
