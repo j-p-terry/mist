@@ -11,12 +11,12 @@ The model evolves radial surface densities for gas and two solid carrier populat
 
 ## What MIST models
 
-MIST currently tracks CO, CO$_{2}$, and H$_{2}$O in gaseous, pure-ice, and matrix-associated reservoirs.
+MIST currently tracks CO, CO$`\_{2}`$, and H$_2$O in gaseous, pure-ice, and matrix-associated reservoirs.
 
 For CO:
 - gas-phase CO
 - pure CO ice
-- CO sequestered in CO$_{2}$-rich ice (`CO@CO2`)
+- CO sequestered in CO$_2$-rich ice (`CO@CO2`)
 - CO sequestered in H$_2$O-rich ice (`CO@H2O`)
 
 For CO$_2$:
