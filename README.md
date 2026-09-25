@@ -11,22 +11,22 @@ The model evolves radial surface densities for gas and two solid carrier populat
 
 ## What MIST models
 
-MIST currently tracks CO, $CO_{2}$, and H$_2$O in gaseous, pure-ice, and matrix-associated reservoirs.
+MIST currently tracks CO, $\mathrm{CO}_{2}$, and $\mathrm{H}_2\mathrm{O}$ in gaseous, pure-ice, and matrix-associated reservoirs.
 
 For CO:
 - gas-phase CO
 - pure CO ice
-- CO sequestered in CO$_2$-rich ice (`CO@CO2`)
-- CO sequestered in H$_2$O-rich ice (`CO@H2O`)
+- CO sequestered in $\mathrm{CO}_{2}$-rich ice (`CO@CO2`)
+- CO sequestered in $\mathrm{H}_2\mathrm{O}$-rich ice (`CO@H2O`)
 
-For CO$_2$:
-- gas-phase CO$_2$
-- pure CO$_2$ ice
-- CO$_2$ sequestered in H$_2$O-rich ice (`CO2@H2O`)
+For $\mathrm{CO}_{2}$:
+- gas-phase $\mathrm{CO}_{2}$
+- pure $\mathrm{CO}_{2}$ ice
+- $\mathrm{CO}_{2}$ sequestered in $\mathrm{H}_2\mathrm{O}$-rich ice (`CO2@H2O`)
 
-For H$_2$O:
-- gas-phase H$_2$O
-- H$_2$O ice
+For $\mathrm{H}_2\mathrm{O}$:
+- gas-phase $\mathrm{H}_2\mathrm{O}$
+- $\mathrm{H}_2\mathrm{O}$ ice
 
 Each solid reservoir is carried independently by:
 - **pebbles** — settled, faster-drifting, mass-dominant solids
