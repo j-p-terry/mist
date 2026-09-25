@@ -1,9 +1,9 @@
-<p align="center">
-  <img src="mist_logo.png" alt="MIST logo" width="520">
-</p>
-
 # MIST
 ## Mixed-Ice Snowsurface Transport
+
+<p align="center">
+  <img src="mist_logo.png" alt="MIST logo" width="300">
+</p>
 
 **MIST** is a 1+1D model for the transport, sequestration, and release of volatile ices in protoplanetary disks.
 
@@ -11,7 +11,7 @@ The model evolves radial surface densities for gas and two solid carrier populat
 
 ## What MIST models
 
-MIST currently tracks CO, CO$_2$, and H$_2$O in gaseous, pure-ice, and matrix-associated reservoirs.
+MIST currently tracks CO, CO$`_2`$, and H$`_2$`O in gaseous, pure-ice, and matrix-associated reservoirs.
 
 For CO:
 - gas-phase CO
