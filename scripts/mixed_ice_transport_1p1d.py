@@ -284,6 +284,22 @@ DEFAULTS: Dict[str, Any] = {
         # re-equilibrated according to the prescribed reservoir fractions.
         "phase_partition": {
             "preserve_carrier_history": True,
+            # Allocation of shared vapor between carriers during recondensation.
+            #
+            # "surface_area" (recommended):
+            #   carrier weights are proportional to the geometric grain
+            #   surface/collision area traced by the refractory grain cores,
+            #
+            #       A_c propto Sigma_ref,c / (rho_s,c a_c).
+            #
+            #   The carrier-averaged survival fraction is applied separately in
+            #   the phase target, so the effective condensation contribution is
+            #   proportional to A_c <S_X>_c without double-counting survival.
+            #
+            # "fixed":
+            #   legacy behavior using dust.volatile_carrier_fractions.
+            "condensation_weighting": "surface_area",
+            "condensation_area_floor": 1.0e-300,
             # If False, inherited matrix-associated reservoirs may only be lost;
             # vapor can recondense as pure ice but cannot be re-sequestered into
             # CO@CO2, CO@H2O, or CO2@H2O after t=0.
@@ -467,6 +483,32 @@ def validate_params(p: Dict[str, Any]) -> None:
         raise ValueError("dust.phase_partition.preserve_carrier_history must be boolean.")
     if phase_partition_cfg.get("allow_resequestration", True) not in {True, False}:
         raise ValueError("dust.phase_partition.allow_resequestration must be boolean.")
+
+    condensation_weighting = str(
+        phase_partition_cfg.get("condensation_weighting", "surface_area")
+    ).lower()
+    if condensation_weighting not in {"surface_area", "fixed"}:
+        raise ValueError(
+            "dust.phase_partition.condensation_weighting must be "
+            "'surface_area' or 'fixed'."
+        )
+    if float(phase_partition_cfg.get("condensation_area_floor", 1.0e-300)) < 0.0:
+        raise ValueError("dust.phase_partition.condensation_area_floor must be >= 0.")
+
+    if condensation_weighting == "surface_area":
+        for carrier in CARRIERS:
+            ccfg = p["dust"]["carriers"][carrier]
+            if float(ccfg["grain_size_cm"]) <= 0.0:
+                raise ValueError(
+                    f"dust.carriers.{carrier}.grain_size_cm must be > 0 when "
+                    "condensation_weighting='surface_area'."
+                )
+            if float(ccfg["rho_s_g_cm3"]) <= 0.0:
+                raise ValueError(
+                    f"dust.carriers.{carrier}.rho_s_g_cm3 must be > 0 when "
+                    "condensation_weighting='surface_area'."
+                )
+
     if (
         not bool(phase_partition_cfg.get("allow_resequestration", True))
         and not bool(phase_partition_cfg.get("preserve_carrier_history", True))
@@ -1232,6 +1274,113 @@ def carrier_total_solid_sigma(state: Dict[str, np.ndarray], carrier: str) -> np.
     )
 
 
+
+def condensation_carrier_weights(
+    state: Dict[str, np.ndarray],
+    params: Dict[str, Any],
+) -> Dict[str, np.ndarray]:
+    """Return radial carrier weights used to allocate shared vapor.
+
+    ``dust.volatile_carrier_fractions`` describes the *initial* volatile
+    inventory assigned to each carrier. It should not, in general, also be
+    interpreted as the fraction of newly condensing vapor that lands on each
+    carrier.
+
+    In the recommended ``surface_area`` mode, condensation weights are
+    proportional to the geometric grain surface/collision area per unit disk
+    area traced by the refractory grain cores,
+
+        A_c propto Sigma_ref,c / (rho_s,c a_c).
+
+    For monodisperse spherical grains, both total grain surface area and
+    collisional cross section differ from this expression only by constants
+    that cancel when the carrier weights are normalized.
+
+    Refractory surface density is used rather than volatile-ice mass because it
+    traces the number of grain cores. Adding an ice mantle changes a grain's
+    mass but does not create additional grains in this two-carrier model.
+
+    Importantly, the carrier survival fraction is *not* included in this helper.
+    The phase-target equations multiply the gas contribution by the relevant
+    carrier-averaged survival fraction exactly once. Consequently the effective
+    contribution of carrier c to condensation of reservoir X is
+
+        A_c <S_X>_c,
+
+    so vertically extended grains automatically lose condensation area where a
+    smaller fraction of their column can retain that ice, without squaring the
+    survival probability.
+
+    ``fixed`` mode reproduces the legacy behavior in which shared vapor is split
+    using ``dust.volatile_carrier_fractions``.
+    """
+    phase_cfg = params["dust"]["phase_partition"]
+    mode = str(
+        phase_cfg.get("condensation_weighting", "surface_area")
+    ).lower()
+
+    if mode == "fixed":
+        cf = params["dust"]["volatile_carrier_fractions"]
+        total = sum(float(cf[c]) for c in CARRIERS)
+        if total <= 0.0:
+            raise ValueError(
+                "dust.volatile_carrier_fractions must have positive sum when "
+                "condensation_weighting='fixed'."
+            )
+
+        template = next(iter(state.values()))
+        return {
+            c: np.full_like(
+                template,
+                float(cf[c]) / total,
+                dtype=float,
+            )
+            for c in CARRIERS
+        }
+
+    if mode != "surface_area":
+        raise ValueError(
+            "Unknown dust.phase_partition.condensation_weighting="
+            f"{mode!r}. Use 'surface_area' or 'fixed'."
+        )
+
+    area_proxy: Dict[str, np.ndarray] = {}
+    for carrier in CARRIERS:
+        cfg = params["dust"]["carriers"][carrier]
+        a = float(cfg["grain_size_cm"])
+        rho_s = float(cfg["rho_s_g_cm3"])
+
+        if a <= 0.0 or rho_s <= 0.0:
+            raise ValueError(
+                f"Positive grain_size_cm and rho_s_g_cm3 are required for "
+                f"surface-area condensation weighting ({carrier})."
+            )
+
+        sigma_ref = np.maximum(state[ref_field(carrier)], 0.0)
+        area_proxy[carrier] = sigma_ref / (rho_s * a)
+
+    total_area = np.zeros_like(
+        next(iter(state.values())),
+        dtype=float,
+    )
+    for carrier in CARRIERS:
+        total_area += area_proxy[carrier]
+
+    floor = float(
+        phase_cfg.get("condensation_area_floor", 1.0e-300)
+    )
+
+    weights: Dict[str, np.ndarray] = {}
+    ok = total_area > floor
+
+    for carrier in CARRIERS:
+        w = np.zeros_like(total_area)
+        w[ok] = area_proxy[carrier][ok] / total_area[ok]
+        weights[carrier] = w
+
+    return weights
+
+
 def apply_dust_backreaction_to_velocities(
     state: Dict[str, np.ndarray],
     disk: Dict[str, np.ndarray],
@@ -1838,7 +1987,8 @@ def phase_targets_w_history(
     Instead:
       - each carrier keeps its own current solid volatile inventory;
       - the shared gas reservoir is partitioned between carriers only for
-        possible recondensation, using dust.volatile_carrier_fractions;
+        possible recondensation, using the configured condensation weighting
+        (surface area by default);
       - each carrier's vertically averaged survival fractions determine how
         much of that carrier-associated volatile inventory remains solid;
       - whatever is not assigned to solid reservoirs remains gas.
@@ -1853,18 +2003,8 @@ def phase_targets_w_history(
     for carrier in CARRIERS:
         targets[ref_field(carrier)] = state[ref_field(carrier)].copy()
 
-    cf = params["dust"]["volatile_carrier_fractions"]
     ms = vertical["mean_survival"]
-
-    # Normalize carrier gas-condensation weights defensively.
-    cf_sum = sum(float(cf[carrier]) for carrier in CARRIERS)
-    if cf_sum <= 0.0:
-        raise ValueError("dust.volatile_carrier_fractions must have positive sum.")
-
-    w_carrier = {
-        carrier: float(cf[carrier]) / cf_sum
-        for carrier in CARRIERS
-    }
+    w_carrier = condensation_carrier_weights(state, params)
 
     # ------------------------------------------------------------------
     # CO
@@ -2002,8 +2142,8 @@ def phase_targets_w_history_no_resequestration(
         during a phase update -- they never receive material from gas or from a
         different solid reservoir;
       - gas-phase CO and CO2 may still recondense as their *pure* ices where the
-        pure ice is stable, using dust.volatile_carrier_fractions to split new
-        condensate between pebbles and small grains;
+        pure ice is stable, using the configured condensation weighting to split
+        new condensate between pebbles and small grains;
       - H2O continues to undergo ordinary gas/ice phase exchange;
       - finite host-capacity limits are still enforced on inherited mixed ice.
         Any capacity-rejected guest is forced to gas so the capacity operator
@@ -2019,13 +2159,8 @@ def phase_targets_w_history_no_resequestration(
     for carrier in CARRIERS:
         targets[ref_field(carrier)] = state[ref_field(carrier)].copy()
 
-    cf = params["dust"]["volatile_carrier_fractions"]
     ms = vertical["mean_survival"]
-
-    cf_sum = sum(float(cf[carrier]) for carrier in CARRIERS)
-    if cf_sum <= 0.0:
-        raise ValueError("dust.volatile_carrier_fractions must have positive sum.")
-    w_carrier = {carrier: float(cf[carrier]) / cf_sum for carrier in CARRIERS}
+    w_carrier = condensation_carrier_weights(state, params)
 
     # ------------------------------------------------------------------
     # CO: inherited matrix-associated reservoirs may only be lost.
