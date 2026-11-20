@@ -73,7 +73,8 @@ dust:
       stokes_mode: constant
       St: 0.03
 
-      # Used only if stokes_mode: epstein
+      # Used by the surface-area condensation weighting even when St is fixed;
+      # also used by the Epstein Stokes prescription when stokes_mode: epstein.
       grain_size_cm: 0.1
       rho_s_g_cm3: 1.5
 
@@ -87,7 +88,8 @@ dust:
       stokes_mode: constant
       St: 0.0001
 
-      # Used only if stokes_mode: epstein
+      # Used by the surface-area condensation weighting even when St is fixed;
+      # also used by the Epstein Stokes prescription when stokes_mode: epstein.
       grain_size_cm: 0.0001
       rho_s_g_cm3: 1.5
 
@@ -95,8 +97,11 @@ dust:
       include_diffusion: true
       refractory_to_gas: 0.0005
 
-  # How volatile reservoirs are divided between carriers in the cold-limit
-  # phase equilibrium. Must sum to 1.
+  # Initial cold-limit volatile inventory assigned to each carrier.
+  # These fractions still set the t=0 pebble/small-grain split, but they no
+  # longer determine where newly condensing vapor lands when
+  # phase_partition.condensation_weighting: surface_area.
+  # Must sum to 1.
   volatile_carrier_fractions:
     pebble: 0.90
     small: 0.10
@@ -105,6 +110,19 @@ dust:
     # Preserves pebble versus small-grain history. Matrix-associated reservoir
     # fractions still re-equilibrate according to solid_fractions.
     preserve_carrier_history: true
+
+    # Allocation of newly condensing shared vapor between carriers.
+    #
+    # surface_area:
+    #   weight each carrier by Sigma_ref/(rho_s*a). The subsequent phase target
+    #   multiplies by that carrier's mean survival fraction for the relevant
+    #   reservoir, so the effective available condensation area is proportional
+    #   to A_c * <S_X>_c. Survival is therefore counted exactly once.
+    #
+    # fixed:
+    #   legacy behavior using volatile_carrier_fractions (90/10 here).
+    condensation_weighting: surface_area
+    condensation_area_floor: 1.0e-300
 
     # Simple inherited-trapping sensitivity: matrix-associated reservoirs exist
     # initially according to solid_fractions, but after t=0 they can only be
