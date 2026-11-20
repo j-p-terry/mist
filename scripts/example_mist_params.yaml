@@ -1,7 +1,7 @@
 # example_mist_params_fixed.yaml
 #
 # Run with:
-#   python mixed_ice_transport_1p1d_fixed.py example_mist_params_fixed.yaml
+#   python mixed_ice_transport_1p1d.py example_mist_params_fixed.yaml
 #
 # This configuration is for the basic fiducial model:
 #   - 1D radial Eulerian volatile transport
