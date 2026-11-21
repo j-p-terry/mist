@@ -1,7 +1,7 @@
-# example_mist_params_fixed.yaml
+# example_mist_params_cold_area.yaml
 #
 # Run with:
-#   python mixed_ice_transport_1p1d.py example_mist_params_fixed.yaml
+#   python mixed_ice_transport_1p1d.py example_mist_params.yaml
 #
 # This configuration is for the basic fiducial model:
 #   - 1D radial Eulerian volatile transport
@@ -15,7 +15,8 @@
 
 simulation:
   name: mixed_ice_1p1d_example
-  output_dir: mixed_ice_1p1d_outputs_example
+  # Separate output path: never overwrite the previous fiducial run.
+  output_dir: mixed_ice_1p1d_outputs
   t_end_yr: 1000000.0
 
   # If save_interval_yr is null, save_interval_fraction is used.
@@ -73,8 +74,7 @@ dust:
       stokes_mode: constant
       St: 0.03
 
-      # Used by the surface-area condensation weighting even when St is fixed;
-      # also used by the Epstein Stokes prescription when stokes_mode: epstein.
+      # Used only if stokes_mode: epstein
       grain_size_cm: 0.1
       rho_s_g_cm3: 1.5
 
@@ -88,8 +88,7 @@ dust:
       stokes_mode: constant
       St: 0.0001
 
-      # Used by the surface-area condensation weighting even when St is fixed;
-      # also used by the Epstein Stokes prescription when stokes_mode: epstein.
+      # Used only if stokes_mode: epstein
       grain_size_cm: 0.0001
       rho_s_g_cm3: 1.5
 
@@ -97,37 +96,45 @@ dust:
       include_diffusion: true
       refractory_to_gas: 0.0005
 
-  # Initial cold-limit volatile inventory assigned to each carrier.
-  # These fractions still set the t=0 pebble/small-grain split, but they no
-  # longer determine where newly condensing vapor lands when
-  # phase_partition.condensation_weighting: surface_area.
-  # Must sum to 1.
+  # Initial carrier split of the volatile mass (not the condensation weights).
+  # Must sum to 1. This remains 90/10 in the paper fiducial.
   volatile_carrier_fractions:
     pebble: 0.90
     small: 0.10
 
   phase_partition:
-    # Preserves pebble versus small-grain history. Matrix-associated reservoir
-    # fractions still re-equilibrate according to solid_fractions.
+    # Preserve carrier history AND the ice matrix of material already present.
+    # Only ice entering the gas pool can be incorporated into another matrix.
     preserve_carrier_history: true
+    preserve_matrix_history: true
 
-    # Allocation of newly condensing shared vapor between carriers.
-    #
-    # surface_area:
-    #   weight each carrier by Sigma_ref/(rho_s*a). The subsequent phase target
-    #   multiplies by that carrier's mean survival fraction for the relevant
-    #   reservoir, so the effective available condensation area is proportional
-    #   to A_c * <S_X>_c. Survival is therefore counted exactly once.
-    #
-    # fixed:
-    #   legacy behavior using volatile_carrier_fractions (90/10 here).
-    condensation_weighting: surface_area
+    # Cold-site normalization (preferred). Each eligible new-ice site scores
+    # as Sigma_ref,c/(rho_s,c * a_c) * f_reservoir * <S_reservoir>_c.
+    # Scores are normalized over *available cold* grain area across carriers
+    # and all eligible reservoirs of the volatile species.
+    # Alternative closures: surface_area (old geometric-area weighting),
+    # fixed (old 90/10 weighting).
+    condensation_weighting: available_surface_area
     condensation_area_floor: 1.0e-300
+    condensation_survival_floor: 1.0e-10
 
-    # Simple inherited-trapping sensitivity: matrix-associated reservoirs exist
-    # initially according to solid_fractions, but after t=0 they can only be
-    # depleted by phase release. Released vapor cannot be sequestered again into
-    # CO@CO2, CO@H2O, or CO2@H2O; it may remain gas or recondense as pure ice.
+    # Determines HOW MUCH gas can condense, distinct from WHERE it condenses.
+    # max_survival = maximum carrier-averaged, reservoir-weighted survival,
+    # assuming rapid vertical vapor mixing and efficient cold-grain capture.
+    # This is an idealized equilibrium-like closure, not microscopic kinetics.
+    # area_weighted_survival = more conservative comparison case.
+    condensation_capture_mode: max_survival
+
+    # Do not propose new guest deposition onto matrices already full by the
+    # host/guest molar-capacity ratios. Redistribute attempted condensation
+    # among remaining cold eligible reservoirs; otherwise leave it in vapor.
+    # The final capacity operator still checks/rejects inherited oversaturation.
+    prelimit_condensation_by_capacity: true
+
+    # If true (fiducial), gas may be sequestered again into matrix-associated
+    # reservoirs wherever those reservoirs are locally stable.
+    # If false, the t=0 mixed-ice inventory is inherited and can only be lost;
+    # released CO/CO2 may recondense only as pure ice.
     allow_resequestration: true
 
   # Backreaction

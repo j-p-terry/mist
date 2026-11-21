@@ -272,34 +272,36 @@ DEFAULTS: Dict[str, Any] = {
                 "refractory_to_gas": 5.0e-4,
             },
         },
-        # Sets how cold-limit volatile inventories are distributed across the
-        # two solid carriers during phase equilibrium. These should sum to 1.
-        # Pebbles dominate mass transport; small grains dominate vertical/JWST
-        # observability.
+        # t=0 volatile inventory allocation across pebble/small carriers.
+        # These fractions do NOT allocate new condensate in the new closure.
+        # They should sum to 1.
         "volatile_carrier_fractions": {
             "pebble": 0.90,
             "small": 0.10,
         },
-        # Preserves pebble/small-grain carrier history.  Matrix identity is still
-        # re-equilibrated according to the prescribed reservoir fractions.
+        # Retain carrier transport histories, with a separate switch to preserve
+        # the identities of already-formed ice matrices until sublimation.
         "phase_partition": {
             "preserve_carrier_history": True,
             # Allocation of shared vapor between carriers during recondensation.
             #
-            # "surface_area" (recommended):
-            #   carrier weights are proportional to the geometric grain
-            #   surface/collision area traced by the refractory grain cores,
-            #
-            #       A_c propto Sigma_ref,c / (rho_s,c a_c).
-            #
-            #   The carrier-averaged survival fraction is applied separately in
-            #   the phase target, so the effective condensation contribution is
-            #   proportional to A_c <S_X>_c without double-counting survival.
-            #
-            # "fixed":
-            #   legacy behavior using dust.volatile_carrier_fractions.
-            "condensation_weighting": "surface_area",
+            # available_surface_area: distribute new condensate among the
+            # surfaces actually able to retain each ice reservoir, proportional
+            # to [Sigma_ref/(rho_s*a)] * f_reservoir * mean_survival.
+            # Total condensed vapor is separately bounded by the configured
+            # capture closure; do not multiply deposition by survival twice.
+            # surface_area and fixed retain older *carrier weighting* closures
+            # for sensitivity tests, not bit-for-bit reproductions of the old
+            # complete phase algorithm.
+            "condensation_weighting": "available_surface_area",
             "condensation_area_floor": 1.0e-300,
+            "condensation_survival_floor": 1.0e-10,
+            # An efficient vertical mixing closure, NOT a freeze-out kinetic law.
+            "condensation_capture_mode": "max_survival",
+            # Avoid proposing new guest deposition on an already full matrix.
+            "prelimit_condensation_by_capacity": True,
+            # Retain the host identity of extant ice until it releases to gas.
+            "preserve_matrix_history": True,
             # If False, inherited matrix-associated reservoirs may only be lost;
             # vapor can recondense as pure ice but cannot be re-sequestered into
             # CO@CO2, CO@H2O, or CO2@H2O after t=0.
@@ -487,15 +489,24 @@ def validate_params(p: Dict[str, Any]) -> None:
     condensation_weighting = str(
         phase_partition_cfg.get("condensation_weighting", "surface_area")
     ).lower()
-    if condensation_weighting not in {"surface_area", "fixed"}:
-        raise ValueError(
-            "dust.phase_partition.condensation_weighting must be "
-            "'surface_area' or 'fixed'."
-        )
+    if condensation_weighting not in {"available_surface_area", "surface_area", "fixed"}:
+        raise ValueError("condensation_weighting must be available_surface_area, surface_area, or fixed")
+    if str(phase_partition_cfg.get("condensation_capture_mode", "max_survival")) not in {
+        "max_survival", "area_weighted_survival"
+    }:
+        raise ValueError("condensation_capture_mode must be max_survival or area_weighted_survival")
+    if not 0 <= float(phase_partition_cfg.get("condensation_survival_floor", 1e-10)) < 1:
+        raise ValueError("condensation_survival_floor must be in [0,1)")
+    if phase_partition_cfg.get("preserve_matrix_history", True) not in {True, False}:
+        raise ValueError("preserve_matrix_history must be boolean")
+    if phase_partition_cfg.get("prelimit_condensation_by_capacity", True) not in {True, False}:
+        raise ValueError("prelimit_condensation_by_capacity must be boolean")
+    if condensation_weighting == "available_surface_area" and not bool(phase_partition_cfg["preserve_carrier_history"]):
+        raise ValueError("available_surface_area requires preserve_carrier_history: true")
     if float(phase_partition_cfg.get("condensation_area_floor", 1.0e-300)) < 0.0:
         raise ValueError("dust.phase_partition.condensation_area_floor must be >= 0.")
 
-    if condensation_weighting == "surface_area":
+    if condensation_weighting in {"available_surface_area", "surface_area"}:
         for carrier in CARRIERS:
             ccfg = p["dust"]["carriers"][carrier]
             if float(ccfg["grain_size_cm"]) <= 0.0:
@@ -508,6 +519,12 @@ def validate_params(p: Dict[str, Any]) -> None:
                     f"dust.carriers.{carrier}.rho_s_g_cm3 must be > 0 when "
                     "condensation_weighting='surface_area'."
                 )
+
+    if (
+        not bool(phase_partition_cfg.get("allow_resequestration", True))
+        and not bool(phase_partition_cfg.get("preserve_matrix_history", True))
+    ):
+        raise ValueError("No-resequestration requires preserve_matrix_history: true")
 
     if (
         not bool(phase_partition_cfg.get("allow_resequestration", True))
@@ -1286,9 +1303,8 @@ def condensation_carrier_weights(
     interpreted as the fraction of newly condensing vapor that lands on each
     carrier.
 
-    In the recommended ``surface_area`` mode, condensation weights are
-    proportional to the geometric grain surface/collision area per unit disk
-    area traced by the refractory grain cores,
+    In the ``surface_area`` or ``available_surface_area`` modes, raw weights
+    trace the geometric grain surface/collision area of refractory cores,
 
         A_c propto Sigma_ref,c / (rho_s,c a_c).
 
@@ -1300,23 +1316,21 @@ def condensation_carrier_weights(
     traces the number of grain cores. Adding an ice mantle changes a grain's
     mass but does not create additional grains in this two-carrier model.
 
-    Importantly, the carrier survival fraction is *not* included in this helper.
-    The phase-target equations multiply the gas contribution by the relevant
-    carrier-averaged survival fraction exactly once. Consequently the effective
-    contribution of carrier c to condensation of reservoir X is
+    Survival is NOT included in these raw weights. In available_surface_area
+    mode it is folded into the site scores with the reservoir fraction, then
+    those scores are normalized ACROSS all physically cold eligible sites.
+    The deposited gas is not multiplied by survival again. The old
+    surface_area/fixed closures retain their original survival-on-gas step.
 
-        A_c <S_X>_c,
+    ``fixed`` mode reproduces the legacy *carrier weighting* in which shared
+    vapor is split using ``dust.volatile_carrier_fractions``. This does not
+    reproduce the old model bit-for-bit because phase pooling and matrix
+    history can be different. Compare with the original script for baseline.
 
-    so vertically extended grains automatically lose condensation area where a
-    smaller fraction of their column can retain that ice, without squaring the
-    survival probability.
-
-    ``fixed`` mode reproduces the legacy behavior in which shared vapor is split
-    using ``dust.volatile_carrier_fractions``.
     """
     phase_cfg = params["dust"]["phase_partition"]
     mode = str(
-        phase_cfg.get("condensation_weighting", "surface_area")
+        phase_cfg.get("condensation_weighting", "available_surface_area")
     ).lower()
 
     if mode == "fixed":
@@ -1338,10 +1352,10 @@ def condensation_carrier_weights(
             for c in CARRIERS
         }
 
-    if mode != "surface_area":
+    if mode not in {"surface_area", "available_surface_area"}:
         raise ValueError(
             "Unknown dust.phase_partition.condensation_weighting="
-            f"{mode!r}. Use 'surface_area' or 'fixed'."
+            f"{mode!r}. Use available_surface_area, surface_area or fixed."
         )
 
     area_proxy: Dict[str, np.ndarray] = {}
@@ -1809,7 +1823,12 @@ def capacity_output_fields(
     initial: Dict[str, np.ndarray], cumulative: Dict[str, np.ndarray],
     grid: Dict[str, np.ndarray], current: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
-    """Build radial snapshot fields for initial, current, and cumulative cap rejection."""
+    """Build rejection diagnostics for PROPOSED phase targets, not net loss.
+
+    Saturated hosts may reject the same proposed condensation repeatedly.
+    Consequently these cumulatives can greatly exceed the physical inventory;
+    they must never be reported as a net volatile loss or integrated delivery.
+    """
     out: Dict[str, np.ndarray] = {}
     groups = [("initial", initial), ("cum", cumulative)]
     if current is not None:
@@ -1972,155 +1991,235 @@ def phase_targets(
     
     return targets
 
+def _cold_condensation_allocations(
+    vapor_pool: np.ndarray,
+    specs: list[tuple[str, str, str, float]],
+    state: Dict[str, np.ndarray],
+    vertical: Dict[str, Any],
+    params: Dict[str, Any],
+    max_new_ice: Optional[Dict[str, np.ndarray]] = None,
+) -> Dict[str, np.ndarray]:
+    """Newly condensed vapor by field; keep capture rate separate from site choice.
+
+    Site scores are base grain area * eligible reservoir fraction * carrier
+    mean survival. In available_surface_area mode they are normalized ACROSS
+    ALL eligible carriers and matrices for this molecular species. The gas
+    contribution is NOT multiplied by survival again in the phase target.
+
+    Separately, max_survival caps the total condensed fraction by the largest
+    carrier's reservoir-fraction-weighted survival. This is a fast vertical-
+    mixing, rapid-capture assumption, not an adsorption/desorption kinetic law.
+    The area_weighted_survival alternative is more conservative and (largely)
+    reverts the previous surface-area * survival gas uptake efficiency.
+    """
+    pcfg = params["dust"]["phase_partition"]
+    mode = str(pcfg.get("condensation_weighting", "available_surface_area")).lower()
+    base = condensation_carrier_weights(state, params)
+    survival_floor = float(pcfg.get("condensation_survival_floor", 1e-10))
+    scores = {}
+    per_carrier = {c: np.zeros_like(vapor_pool) for c in CARRIERS}
+    remaining_capacity = {}
+    for c, field, key, frac in specs:
+        survival = np.clip(vertical["mean_survival"][c][key], 0, 1)
+        survival = np.where(survival >= survival_floor, survival, 0.0)
+        limit = (np.asarray(max_new_ice[field], dtype=float)
+                 if max_new_ice is not None and field in max_new_ice
+                 else np.full_like(vapor_pool, np.inf))
+        remaining_capacity[field] = np.maximum(limit, 0)
+        eligible = remaining_capacity[field] > 0
+        scores[field] = np.where(eligible, base[c] * float(frac) * survival, 0.0)
+        # A carrier with no physical grains must not set the global gas
+        # capture efficiency. A nearly saturated host contributes at most
+        # its remaining fractional capacity to the efficient-capture bound.
+        capacity_fraction = np.minimum(
+            1.0, np.divide(
+                remaining_capacity[field], np.maximum(np.maximum(vapor_pool, 0.0), 1e-300),
+                out=np.ones_like(vapor_pool),
+                where=np.isfinite(remaining_capacity[field]),
+            )
+        )
+        per_carrier[c] += np.where(
+            eligible & (base[c] > 0),
+            float(frac) * survival * capacity_fraction,
+            0.0,
+        )
+
+    if mode != "available_surface_area":
+        # Old behavior for controlled comparison, including the original
+        # separate carrier-area normalization followed by survival.
+        return {field: np.maximum(vapor_pool, 0) * score for field, score in scores.items()}
+
+    score_sum = sum(scores.values())
+    if str(pcfg.get("condensation_capture_mode", "max_survival")) == "max_survival":
+        capture = np.maximum.reduce(list(per_carrier.values()))
+    else:
+        capture = sum(base[c] * per_carrier[c] for c in CARRIERS)
+    capture = np.where(score_sum > 0, np.clip(capture, 0, 1), 0.0)
+    amount = np.maximum(vapor_pool, 0) * capture
+    # Water-filling: remove saturated guest reservoirs, then redistribute
+    # unaccepted gas to the other still-cold surfaces. Any gas that cannot fit
+    # stays in the vapor reservoir; it is not incorrectly added to a host.
+    remaining = amount.copy()
+    deposited = {field: np.zeros_like(amount) for field in scores}
+    for _ in range(len(scores) + 1):
+        active = {
+            field: np.where(
+                remaining_capacity[field] > np.maximum(1e-14 * amount, 1e-300),
+                score, 0.0,
+            )
+            for field, score in scores.items()
+        }
+        norm = sum(active.values())
+        ok = norm > float(pcfg.get("condensation_area_floor", 1e-300))
+        if not np.any(ok & (remaining > 0)):
+            break
+        added_total = np.zeros_like(amount)
+        for field, score in active.items():
+            proposal = np.divide(remaining * score, norm,
+                                 out=np.zeros_like(amount), where=ok)
+            accepted = np.minimum(proposal, remaining_capacity[field])
+            deposited[field] += accepted
+            remaining_capacity[field] = np.maximum(remaining_capacity[field] - accepted, 0.0)
+            added_total += accepted
+        remaining = np.maximum(remaining - added_total, 0.0)
+        if not np.any(added_total > 0):
+            break
+    return deposited
+
+
+def _remaining_guest_condensation_capacity(
+    species: str,
+    specs: list[tuple[str, str, str, float]],
+    retained: Dict[str, np.ndarray],
+    targets: Dict[str, np.ndarray],
+    params: Dict[str, Any],
+) -> Dict[str, np.ndarray]:
+    """Available new guest mass, given provisional host-ice phase targets.
+
+    This pre-limits GUEST deposition only. The downstream capacity operator
+    still clips existing ice when its host sublimates and enforces optional
+    combined-host constraints. A zero-capacity site cannot attract an unlimited
+    sequence of proposed deposits simply because its surface is cold.
+    """
+    tcfg = trapping_capacity_config(params)
+    pcfg = params["dust"]["phase_partition"]
+    if not bool(tcfg.get("enabled", False)) or not bool(pcfg.get("prelimit_condensation_by_capacity", True)):
+        return {}
+    caps = {}
+    for c, field, _, _ in specs:
+        host, max_ratio, guest, host_species = None, None, None, None
+        if field == co2_at_h2o_field(c):
+            host = targets[h2o_field(c)]
+            max_ratio = tcfg.get("CO2_at_H2O", {}).get("max_guest_per_host_mol", None)
+            guest, host_species = "CO2", "H2O"
+        elif field == co_at_h2o_field(c):
+            host = targets[h2o_field(c)]
+            max_ratio = tcfg.get("CO_at_H2O", {}).get("max_guest_per_host_mol", None)
+            guest, host_species = "CO", "H2O"
+        elif field == co_at_co2_field(c):
+            mode = tcfg.get("CO_at_CO2", {}).get("host_mode", "total_CO2_ice")
+            host = targets[co2_pure_field(c)]
+            if mode == "total_CO2_ice":
+                host = host + targets[co2_at_h2o_field(c)]
+            elif mode != "pure_CO2_ice":
+                raise ValueError(f"Unknown CO2 host_mode: {mode}")
+            max_ratio = tcfg.get("CO_at_CO2", {}).get("max_guest_per_host_mol", None)
+            guest, host_species = "CO", "CO2"
+        if host is None or max_ratio is None:
+            continue
+        # The host is calculated for the same carrier and phase-target epoch.
+        maximum = float(max_ratio) * (MOLECULAR_WEIGHTS[guest] /
+                                         MOLECULAR_WEIGHTS[host_species]) * np.maximum(host, 0)
+        caps[field] = np.maximum(maximum - retained[field], 0.0)
+    return caps
+
+
+def _carrier_history_targets(
+    state: Dict[str, np.ndarray],
+    vertical: Dict[str, Any],
+    params: Dict[str, Any],
+    *,
+    allow_resequestration: bool,
+    capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
+) -> Dict[str, np.ndarray]:
+    """Carrier and optionally matrix-history-preserving phase targets.
+
+    Existing ice only survives in its own matrix (or sublimates). Newly
+    released material joins the same shared gas pool as existing vapor, then
+    may condense on eligible cold surfaces. Newly deposited guest material
+    is pre-limited by host capacity, with final capacity enforcement last.
+
+    This avoids reassigning all pre-existing ice to prescribed reservoir
+    fractions at every timestep, which previously caused recurring, largely
+    artificial over-capacity proposals and apparent reservoir cycling.
+    """
+    targets = {name: np.zeros_like(next(iter(state.values()))) for name in ALL_FIELDS}
+    ms = vertical["mean_survival"]
+    for c in CARRIERS:
+        targets[ref_field(c)] = state[ref_field(c)].copy()
+    preserve_matrix = bool(params["dust"]["phase_partition"].get("preserve_matrix_history", True))
+    co_fr = params["volatiles"]["CO"]["solid_fractions"]
+    co2_fr = params["volatiles"]["CO2"]["solid_fractions"]
+    reservoir_sets = {
+        "H2O": [(c, h2o_field(c), "H2O", 1.0) for c in CARRIERS],
+        "CO2": ([(c, co2_pure_field(c), "CO2_pure", float(co2_fr["pure"])) for c in CARRIERS]
+                + [(c, co2_at_h2o_field(c), "CO2_at_H2O", float(co2_fr["at_H2O"])) for c in CARRIERS]),
+        "CO": ([(c, co_pure_field(c), "CO_pure", float(co_fr["pure"])) for c in CARRIERS]
+               + [(c, co_at_co2_field(c), "CO_at_CO2", float(co_fr["at_CO2"])) for c in CARRIERS]
+               + [(c, co_at_h2o_field(c), "CO_at_H2O", float(co_fr["at_H2O"])) for c in CARRIERS]),
+    }
+    for species, specs in reservoir_sets.items():
+        # Every target construction conserves this molecular species locally.
+        total = state[f"{species}_gas"] + sum(state[field] for _, field, _, _ in specs)
+        retained = {}
+        if preserve_matrix:
+            for c, field, key, _ in specs:
+                retained[field] = ms[c][key] * state[field]
+        else:
+            # Legacy: existing ice continuously redistributes between matrices.
+            for c in CARRIERS:
+                old_carrier = sum(state[field] for cc, field, _, _ in specs if cc == c)
+                for cc, field, key, frac in specs:
+                    if cc == c:
+                        retained[field] = float(frac) * ms[c][key] * old_carrier
+
+        gas_pool = np.maximum(total - sum(retained.values()), 0.0)
+        if allow_resequestration or species == "H2O":
+            possible_sites = specs
+        else:
+            # In the irreversible case, CO/CO2 mixed matrices cannot be rebuilt.
+            # Pure ice gets unit weighting rather than its mixed-ice fraction.
+            possible_sites = [
+                (c, field, key, 1.0) for c, field, key, _ in specs
+                if field == co_pure_field(c) or field == co2_pure_field(c)
+            ]
+        max_new_ice = _remaining_guest_condensation_capacity(
+            species, possible_sites, retained, targets, params
+        )
+        deposited = _cold_condensation_allocations(
+            gas_pool, possible_sites, state, vertical, params,
+            max_new_ice=max_new_ice,
+        )
+        for _, field, _, _ in specs:
+            targets[field] = np.maximum(retained[field] + deposited.get(field, 0.0), 0.0)
+        targets[f"{species}_gas"] = np.maximum(
+            total - sum(targets[field] for _, field, _, _ in specs), 0.0
+        )
+
+    return apply_trapping_capacity_limits(
+        targets, params, diagnostics=capacity_diagnostics,
+        force_excess_destination=None if allow_resequestration else "gas",
+    )
+
+
 def phase_targets_w_history(
     state: Dict[str, np.ndarray],
     vertical: Dict[str, Any],
     params: Dict[str, Any],
     capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
-    """
-    Carrier-history-preserving phase targets.
-
-    This version does NOT repartition the full volatile inventory between
-    pebbles and small grains at every phase update.
-
-    Instead:
-      - each carrier keeps its own current solid volatile inventory;
-      - the shared gas reservoir is partitioned between carriers only for
-        possible recondensation, using the configured condensation weighting
-        (surface area by default);
-      - each carrier's vertically averaged survival fractions determine how
-        much of that carrier-associated volatile inventory remains solid;
-      - whatever is not assigned to solid reservoirs remains gas.
-
-    This preserves distinct pebble/small-grain transport histories much better
-    than the original equilibrium_carrier_fraction version.
-    """
-
-    targets = {name: np.zeros_like(next(iter(state.values()))) for name in ALL_FIELDS}
-
-    # Refractory solids do not phase change.
-    for carrier in CARRIERS:
-        targets[ref_field(carrier)] = state[ref_field(carrier)].copy()
-
-    ms = vertical["mean_survival"]
-    w_carrier = condensation_carrier_weights(state, params)
-
-    # ------------------------------------------------------------------
-    # CO
-    # ------------------------------------------------------------------
-    fr = params["volatiles"]["CO"]["solid_fractions"]
-
-    CO_total = total_CO(state)
-    CO_solid_target_sum = np.zeros_like(CO_total)
-
-    for carrier in CARRIERS:
-        # Existing carrier-specific solid CO inventory.
-        CO_solid_carrier = (
-            state[co_pure_field(carrier)]
-            + state[co_at_co2_field(carrier)]
-            + state[co_at_h2o_field(carrier)]
-        )
-
-        # Gas is shared. For target construction, assign a fraction of the
-        # current gas reservoir to each carrier as the material available for
-        # recondensation onto that carrier.
-        CO_available_carrier = (
-            CO_solid_carrier + \
-            w_carrier[carrier] * state["CO_gas"]
-        )
-
-        targets[co_pure_field(carrier)] = (
-            float(fr["pure"]) * \
-            ms[carrier]["CO_pure"] * \
-            CO_available_carrier
-        )
-
-        targets[co_at_co2_field(carrier)] = (
-            float(fr["at_CO2"]) * \
-            ms[carrier]["CO_at_CO2"] * \
-            CO_available_carrier
-        )
-
-        targets[co_at_h2o_field(carrier)] = (
-            float(fr["at_H2O"]) * \
-            ms[carrier]["CO_at_H2O"] * \
-            CO_available_carrier
-        )
-
-        CO_solid_target_sum += (
-            targets[co_pure_field(carrier)] + \
-            targets[co_at_co2_field(carrier)] + \
-            targets[co_at_h2o_field(carrier)]
-        )
-
-    targets["CO_gas"] = np.maximum(CO_total - CO_solid_target_sum, 0.0)
-
-    # ------------------------------------------------------------------
-    # CO2
-    # ------------------------------------------------------------------
-    fr = params["volatiles"]["CO2"]["solid_fractions"]
-
-    CO2_total = total_CO2(state)
-    CO2_solid_target_sum = np.zeros_like(CO2_total)
-
-    for carrier in CARRIERS:
-        CO2_solid_carrier = (
-            state[co2_pure_field(carrier)]
-            + state[co2_at_h2o_field(carrier)]
-        )
-
-        CO2_available_carrier = (
-            CO2_solid_carrier
-            + w_carrier[carrier] * state["CO2_gas"]
-        )
-
-        targets[co2_pure_field(carrier)] = (
-            float(fr["pure"])
-            * ms[carrier]["CO2_pure"]
-            * CO2_available_carrier
-        )
-
-        targets[co2_at_h2o_field(carrier)] = (
-            float(fr["at_H2O"])
-            * ms[carrier]["CO2_at_H2O"]
-            * CO2_available_carrier
-        )
-
-        CO2_solid_target_sum += (
-            targets[co2_pure_field(carrier)]
-            + targets[co2_at_h2o_field(carrier)]
-        )
-
-    targets["CO2_gas"] = np.maximum(CO2_total - CO2_solid_target_sum, 0.0)
-
-    # ------------------------------------------------------------------
-    # H2O
-    # ------------------------------------------------------------------
-    H2O_total = total_H2O(state)
-    H2O_solid_target_sum = np.zeros_like(H2O_total)
-
-    for carrier in CARRIERS:
-        H2O_solid_carrier = state[h2o_field(carrier)]
-
-        H2O_available_carrier = (
-            H2O_solid_carrier
-            + w_carrier[carrier] * state["H2O_gas"]
-        )
-
-        targets[h2o_field(carrier)] = (
-            ms[carrier]["H2O"]
-            * H2O_available_carrier
-        )
-
-        H2O_solid_target_sum += targets[h2o_field(carrier)]
-
-    targets["H2O_gas"] = np.maximum(H2O_total - H2O_solid_target_sum, 0.0)
-    
-    targets = apply_trapping_capacity_limits(targets, params, diagnostics=capacity_diagnostics)
-
-    return targets
-
+    return _carrier_history_targets(state, vertical, params, allow_resequestration=True,
+                                    capacity_diagnostics=capacity_diagnostics)
 
 
 def phase_targets_w_history_no_resequestration(
@@ -2129,130 +2228,8 @@ def phase_targets_w_history_no_resequestration(
     params: Dict[str, Any],
     capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
-    """
-    Carrier-history-preserving targets with *no re-sequestration*.
-
-    This sensitivity model represents an inherited mixed-ice inventory that can
-    be transported and thermally released, but cannot be rebuilt after release.
-
-    Specifically:
-      - existing CO@CO2, CO@H2O, and CO2@H2O remain in the same reservoir while
-        that reservoir is locally survivable;
-      - those matrix-associated reservoirs can only stay constant or decrease
-        during a phase update -- they never receive material from gas or from a
-        different solid reservoir;
-      - gas-phase CO and CO2 may still recondense as their *pure* ices where the
-        pure ice is stable, using the configured condensation weighting to split
-        new condensate between pebbles and small grains;
-      - H2O continues to undergo ordinary gas/ice phase exchange;
-      - finite host-capacity limits are still enforced on inherited mixed ice.
-        Any capacity-rejected guest is forced to gas so the capacity operator
-        cannot accidentally create a new matrix-associated reservoir.
-
-    With initialize_phase_equilibrium=true, the configured cold-limit mixed-ice
-    fractions are therefore interpreted as the inherited t=0 inventory.
-    """
-
-    targets = {name: np.zeros_like(next(iter(state.values()))) for name in ALL_FIELDS}
-
-    # Refractory solids do not phase change.
-    for carrier in CARRIERS:
-        targets[ref_field(carrier)] = state[ref_field(carrier)].copy()
-
-    ms = vertical["mean_survival"]
-    w_carrier = condensation_carrier_weights(state, params)
-
-    # ------------------------------------------------------------------
-    # CO: inherited matrix-associated reservoirs may only be lost.
-    # Shared CO vapor may recondense only as pure CO ice.
-    # ------------------------------------------------------------------
-    CO_total = total_CO(state)
-    CO_solid_target_sum = np.zeros_like(CO_total)
-
-    for carrier in CARRIERS:
-        # Preserve matrix identity and forbid any gain into these reservoirs.
-        targets[co_at_co2_field(carrier)] = (
-            ms[carrier]["CO_at_CO2"] * state[co_at_co2_field(carrier)]
-        )
-        targets[co_at_h2o_field(carrier)] = (
-            ms[carrier]["CO_at_H2O"] * state[co_at_h2o_field(carrier)]
-        )
-
-        # Existing pure CO remains carrier-associated; shared vapor can condense
-        # onto either carrier according to the configured condensation weights.
-        pure_available = (
-            state[co_pure_field(carrier)]
-            + w_carrier[carrier] * state["CO_gas"]
-        )
-        targets[co_pure_field(carrier)] = (
-            ms[carrier]["CO_pure"] * pure_available
-        )
-
-        CO_solid_target_sum += (
-            targets[co_pure_field(carrier)]
-            + targets[co_at_co2_field(carrier)]
-            + targets[co_at_h2o_field(carrier)]
-        )
-
-    targets["CO_gas"] = np.maximum(CO_total - CO_solid_target_sum, 0.0)
-
-    # ------------------------------------------------------------------
-    # CO2: inherited CO2@H2O may only be lost. Shared CO2 vapor may
-    # recondense only as pure CO2 ice.
-    # ------------------------------------------------------------------
-    CO2_total = total_CO2(state)
-    CO2_solid_target_sum = np.zeros_like(CO2_total)
-
-    for carrier in CARRIERS:
-        targets[co2_at_h2o_field(carrier)] = (
-            ms[carrier]["CO2_at_H2O"] * state[co2_at_h2o_field(carrier)]
-        )
-
-        pure_available = (
-            state[co2_pure_field(carrier)]
-            + w_carrier[carrier] * state["CO2_gas"]
-        )
-        targets[co2_pure_field(carrier)] = (
-            ms[carrier]["CO2_pure"] * pure_available
-        )
-
-        CO2_solid_target_sum += (
-            targets[co2_pure_field(carrier)]
-            + targets[co2_at_h2o_field(carrier)]
-        )
-
-    targets["CO2_gas"] = np.maximum(CO2_total - CO2_solid_target_sum, 0.0)
-
-    # ------------------------------------------------------------------
-    # H2O: ordinary gas/ice phase exchange; H2O is a host, not a guest
-    # reservoir in this model.
-    # ------------------------------------------------------------------
-    H2O_total = total_H2O(state)
-    H2O_solid_target_sum = np.zeros_like(H2O_total)
-
-    for carrier in CARRIERS:
-        H2O_available = (
-            state[h2o_field(carrier)]
-            + w_carrier[carrier] * state["H2O_gas"]
-        )
-        targets[h2o_field(carrier)] = (
-            ms[carrier]["H2O"] * H2O_available
-        )
-        H2O_solid_target_sum += targets[h2o_field(carrier)]
-
-    targets["H2O_gas"] = np.maximum(H2O_total - H2O_solid_target_sum, 0.0)
-
-    # Capacity enforcement is still physically useful for the inherited mixed
-    # reservoirs. Force rejected guest material to gas so this operator cannot
-    # repopulate another matrix-associated reservoir in no-resequestration mode.
-    targets = apply_trapping_capacity_limits(
-        targets,
-        params,
-        diagnostics=capacity_diagnostics,
-        force_excess_destination="gas",
-    )
-
-    return targets
+    return _carrier_history_targets(state, vertical, params, allow_resequestration=False,
+                                    capacity_diagnostics=capacity_diagnostics)
 
 
 def build_phase_targets(
@@ -2492,7 +2469,8 @@ def compute_timestep(
         vmax = np.maximum(vmax, np.abs(carrier_coeff[carrier]["v"]))
     mask_v = vmax > 0.0
     dt_adv = float(num["cfl_advective"]) * float(np.min(dr[mask_v] / vmax[mask_v])) if np.any(mask_v) else np.inf
-    Dmax = disk["D_g"].copy()
+    Dmax = (disk["D_g"].copy() if bool(params["volatiles"]["include_vapor_diffusion"])
+            else np.zeros_like(disk["D_g"]))
     for carrier in CARRIERS:
         if bool(params["dust"]["carriers"][carrier]["include_diffusion"]):
             Dmax = np.maximum(Dmax, carrier_coeff[carrier]["D"])
@@ -2618,6 +2596,14 @@ def carbon_oxygen_columns(state: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]
         "H2O_solid_total": H2O_s_peb + H2O_s_small,
         "H2O_solid_pebble": H2O_s_peb,
         "H2O_solid_small": H2O_s_small,
+        # Absolute volatile elemental columns in mol cm^-2 (not normalized
+        # ratios). These distinguish carbon addition from oxygen depletion.
+        "C_mol_cm2_pebble": C_peb,
+        "O_mol_cm2_pebble": O_peb,
+        "C_mol_cm2_small": C_small,
+        "O_mol_cm2_small": O_small,
+        "C_mol_cm2_gas": C_gas,
+        "O_mol_cm2_gas": O_gas,
         "C_over_O_gas": C_gas / np.maximum(O_gas, eps),
         "C_over_O_solid": C_solid / np.maximum(O_solid, eps),
         "C_over_O_pebble": C_peb / np.maximum(O_peb, eps),
@@ -2656,6 +2642,7 @@ def write_snapshot_1d(
     carrier_coeff: Dict[str, Dict[str, np.ndarray]],
     vertical: Dict[str, Any],
     release: Dict[str, np.ndarray],
+    params: Optional[Dict[str, Any]] = None,
 ) -> None:
     co = carbon_oxygen_columns(state)
     cols: Dict[str, np.ndarray] = {
@@ -2686,6 +2673,37 @@ def write_snapshot_1d(
         cols[f"snow_surface_z_over_r_{key}"] = vertical["snow_surfaces_z_over_r"][key]
         for carrier in CARRIERS:
             cols[f"mean_survival_{key}_{carrier}"] = vertical["mean_survival"][carrier][key]
+
+    # Diagnostic proposal probabilities: fraction of a unit shared gas pool
+    # targeting a given carrier BEFORE host-capacity rejection. They document
+    # where the cold available area actually sends vapor in the new closure.
+    if params is not None:
+        base = condensation_carrier_weights(state, params)
+        for c in CARRIERS:
+            cols[f"geometric_area_weight_{c}"] = base[c]
+        cp = params["volatiles"]["CO"]["solid_fractions"]
+        c2p = params["volatiles"]["CO2"]["solid_fractions"]
+        spec_map = {
+            "H2O": [(c, h2o_field(c), "H2O", 1.0) for c in CARRIERS],
+            "CO2": [(c, co2_pure_field(c), "CO2_pure", float(c2p["pure"])) for c in CARRIERS]
+                   + [(c, co2_at_h2o_field(c), "CO2_at_H2O", float(c2p["at_H2O"])) for c in CARRIERS],
+            "CO": [(c, co_pure_field(c), "CO_pure", float(cp["pure"])) for c in CARRIERS]
+                  + [(c, co_at_co2_field(c), "CO_at_CO2", float(cp["at_CO2"])) for c in CARRIERS]
+                  + [(c, co_at_h2o_field(c), "CO_at_H2O", float(cp["at_H2O"])) for c in CARRIERS],
+        }
+        reseq = bool(params["dust"]["phase_partition"].get("allow_resequestration", True))
+        for species, specs in spec_map.items():
+            if species != "H2O" and not reseq:
+                specs = [(c, field, key, 1.0) for c, field, key, _ in specs
+                         if field == co_pure_field(c) or field == co2_pure_field(c)]
+            probs = _cold_condensation_allocations(
+                np.ones_like(grid["r"]), specs, state, vertical, params
+            )
+            cols[f"proposed_gas_capture_fraction_{species}"] = sum(probs.values())
+            for c in CARRIERS:
+                cols[f"proposed_gas_deposition_{species}_{c}"] = sum(
+                    prob for field, prob in probs.items() if field.endswith("_" + c)
+                )
 
     for name in ALL_FIELDS:
         cols[name] = state[name]
@@ -2967,7 +2985,7 @@ def write_outputs(
     output_fields = dict(release)
     output_fields.update(capacity_output_fields(runtime["capacity_initial"], runtime["capacity_cumulative"], grid, current=capacity_current))
     if bool(params["output"]["save_1d_csv"]):
-        write_snapshot_1d(output_dir, snap_idx, t, state, grid, disk, carrier_coeff, vertical, output_fields)
+        write_snapshot_1d(output_dir, snap_idx, t, state, grid, disk, carrier_coeff, vertical, output_fields, params=params)
     append_diagnostics(diag_path, snap_idx, step, t, dt, state, grid, disk, br_diag, carrier_coeff, runtime, output_fields)
     if bool(params["output"]["save_2d_npz"]):
         every = int(params["output"]["save_2d_every_n_snapshots"])
@@ -3013,6 +3031,11 @@ def run(params: Dict[str, Any]) -> None:
     print(f"Writing outputs to: {output_dir}")
     print(f"t_end = {t_end / YR:.6g} yr, save_interval = {save_interval / YR:.6g} yr")
     print("1+1D model: radial transport with vertically averaged snow-surface phase terms; " + f"{gas_mode} H2/He gas disk.")
+    pcfg = params["dust"]["phase_partition"]
+    print("Phase model: condensation_weighting=" + str(pcfg["condensation_weighting"])
+          + ", capture_mode=" + str(pcfg.get("condensation_capture_mode", "max_survival"))
+          + ", preserve_matrix_history=" + str(pcfg.get("preserve_matrix_history", True))
+          + ", prelimit_capacity=" + str(pcfg.get("prelimit_condensation_by_capacity", True)))
 
     while t < t_end * (1.0 - 1.0e-14):
         raw_dt, dt_info = compute_timestep(grid, disk, carrier_coeff, params, return_diagnostics=True)
