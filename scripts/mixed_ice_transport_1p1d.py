@@ -4,6 +4,10 @@ mixed_ice_transport_1p1d.py
 What this does
 --------------
 - Radial transport is Eulerian and 1D in surface density.
+- Bulk gas evolves by conservative viscous diffusion (default) with optional
+  dust backreaction; legacy prescribed-inflow advection remains selectable.
+- Viscous diffusion is implicit; pressure-feedback transport is explicitly
+  CFL limited. Gas-phase volatiles share the exact bulk-gas interface flux.
 - Phase changes are informed by a prescribed vertical structure T(r,z),
     shielding A_V(r,z), and carrier-dependent dust scale heights.
 - Two solid carriers are included:
@@ -246,9 +250,18 @@ DEFAULTS: Dict[str, Any] = {
         "schmidt_gas": 1.0,
         "velocity_mode": "viscous",  # viscous, zero, constant
         "constant_v_g_cm_s": 0.0,
-        # If true, advect Sigma_g with the prescribed radial gas velocity.
-        # This is not the full viscous diffusion equation.
+        # Whether the bulk H2/He gas evolves at all.
         "update_gas": True,
+        # viscous_diffusion (default): Pringle thin-disk diffusion with the
+        # Gárate-type dust-backreaction modification to the gas mass flux.
+        # prescribed_advection: legacy advect Sigma_g with the locally prescribed
+        # velocity (-3nu/2r before backreaction).
+        "evolution_mode": "viscous_diffusion",
+        # Outflow inner edge avoids imposing an artificially rapid zero-torque
+        # drain in the first radial cell. Optional: zero_torque.
+        # Viscous flux is zero at the outer edge. Dust-feedback flow can leave
+        # either edge, but not enter from outside.
+        "viscous_inner_boundary": "outflow",
         "Sigma_floor": 1.0e-30,
     },
     "dust": {
@@ -455,6 +468,16 @@ def validate_params(p: Dict[str, Any]) -> None:
         raise ValueError("gas.surface_density_profile must be 'powerlaw' or 'tapered_powerlaw'.")
     if p["gas"]["velocity_mode"] not in {"viscous", "zero", "constant"}:
         raise ValueError("gas.velocity_mode must be 'viscous', 'zero', or 'constant'.")
+    if p["gas"].get("evolution_mode", "viscous_diffusion") not in {
+        "viscous_diffusion", "prescribed_advection"
+    }:
+        raise ValueError("gas.evolution_mode must be viscous_diffusion or prescribed_advection")
+    if (p["gas"].get("update_gas", True)
+        and p["gas"]["evolution_mode"] == "viscous_diffusion"
+        and p["gas"]["velocity_mode"] != "viscous"):
+        raise ValueError("gas.evolution_mode=viscous_diffusion requires gas.velocity_mode=viscous")
+    if p["gas"].get("viscous_inner_boundary", "outflow") not in {"outflow", "zero_torque"}:
+        raise ValueError("gas.viscous_inner_boundary must be 'outflow' or 'zero_torque'")
 
     for carrier in CARRIERS:
         cfg = p["dust"]["carriers"][carrier]
@@ -660,6 +683,67 @@ def gas_shape(r: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
     return shape
 
 
+def viscous_inner_outflow_coefficient(
+    grid: Dict[str, np.ndarray], nu: np.ndarray, mode: str,
+) -> float:
+    """Positive cm/s coefficient of Sigma_0 in inner outgoing viscous flux."""
+    r0, rin = grid["r"][0], grid["r_edge"][0]
+    if mode == "outflow":
+        return 1.5 * nu[0] / r0
+    if mode == "zero_torque":
+        return 3.0 * nu[0] * np.sqrt(r0) / (np.sqrt(rin) * (r0-rin))
+    raise ValueError(f"Unknown viscous inner boundary: {mode}")
+
+
+def viscous_gas_flux_edges(
+    Sigma_g: np.ndarray,
+    grid: Dict[str, np.ndarray],
+    nu: np.ndarray,
+    A: Optional[np.ndarray] = None,
+    inner_boundary: str = "outflow",
+) -> np.ndarray:
+    """Physical viscous mass flux per circumference [g cm^-1 s^-1].
+
+    For Keplerian rotation, F_nu = -3 A(r)/sqrt(r) d/dr(nu Sigma sqrt(r)).
+    The full viscous gas equation follows from -div(F_nu) when A=1.
+
+    Inner boundary: outflow with v=-3nu/(2r) (default), or zero torque.
+    The former avoids a rapid emptying of the first cell on the short
+    viscous-diffusion timescale set by its grid-center to edge distance.
+    Outer boundary: zero viscous mass flux. No external gas is supplied.
+    """
+    r = grid["r"]
+    re = grid["r_edge"]
+    Q = nu * Sigma_g * np.sqrt(r)
+    coeff = np.ones_like(re) if A is None else interp_edges(A)
+    out = np.zeros_like(re)
+    out[1:-1] = -3.0 * coeff[1:-1] / np.sqrt(re[1:-1]) * (
+        (Q[1:] - Q[:-1]) / (r[1:] - r[:-1])
+    )
+    out[0] = -(coeff[0] * viscous_inner_outflow_coefficient(grid, nu, inner_boundary)
+               * Sigma_g[0])
+    out[-1] = 0.0
+    return out
+
+
+def gas_viscous_velocity_from_flux(
+    Sigma_g: np.ndarray,
+    grid: Dict[str, np.ndarray],
+    nu: np.ndarray,
+    inner_boundary: str = "outflow",
+) -> np.ndarray:
+    """Cell gas viscous velocity consistent with the face-flux geometry.
+
+    The exact viscous *gas mass* evolution uses the face flux directly; this
+    cell-centered velocity is used for pebble drift, vapor transport when gas
+    is fixed, and computing the dust-feedback velocities.
+    """
+    F = viscous_gas_flux_edges(Sigma_g, grid, nu, inner_boundary=inner_boundary)
+    edge_sigma = interp_edges(Sigma_g)
+    ve = F / np.maximum(edge_sigma, 1.0e-300)
+    return 0.5 * (ve[:-1] + ve[1:])
+
+
 def build_fixed_disk(grid: Dict[str, np.ndarray], params: Dict[str, Any]) -> Dict[str, np.ndarray]:
     r = grid["r"]
     area = grid["area"]
@@ -685,7 +769,11 @@ def build_fixed_disk(grid: Dict[str, np.ndarray], params: Dict[str, Any]) -> Dic
     nu = float(gas["alpha"]) * c_s * H
 
     if gas["velocity_mode"] == "viscous":
-        v_g = -1.5 * nu / r
+        if gas.get("update_gas", True) and gas.get("evolution_mode", "viscous_diffusion") == "viscous_diffusion":
+            v_g = gas_viscous_velocity_from_flux(
+                Sigma_g, grid, nu, gas.get("viscous_inner_boundary", "outflow"))
+        else:
+            v_g = -1.5 * nu / r
     elif gas["velocity_mode"] == "zero":
         v_g = np.zeros_like(r)
     else:
@@ -706,6 +794,7 @@ def build_fixed_disk(grid: Dict[str, np.ndarray], params: Dict[str, Any]) -> Dic
         "H": H,
         "nu": nu,
         "v_g": v_g,
+        "v_g_visc": v_g.copy(),
         "eta": eta,
         "D_g": D_g,
         "rho_mid": rho_mid,
@@ -2344,7 +2433,171 @@ def interp_edges(arr: np.ndarray) -> np.ndarray:
     edge[1:-1] = 0.5 * (arr[:-1] + arr[1:])
     return edge
 
-def update_gas_surface_density(
+def _solve_tridiagonal(lower: np.ndarray, diag: np.ndarray,
+                       upper: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    """Thomas solver for a diagonally dominant tridiagonal M-matrix."""
+    n = len(rhs)
+    c = np.empty(n, dtype=float)
+    d = np.empty(n, dtype=float)
+    denom = diag[0]
+    if not np.isfinite(denom) or denom <= 0:
+        raise FloatingPointError("Invalid implicit-viscosity matrix diagonal")
+    c[0] = upper[0] / denom
+    d[0] = rhs[0] / denom
+    for i in range(1, n):
+        denom = diag[i] - lower[i] * c[i-1]
+        if not np.isfinite(denom) or denom <= 0:
+            raise FloatingPointError("Invalid implicit-viscosity pivot")
+        c[i] = upper[i] / denom if i < n-1 else 0.0
+        d[i] = (rhs[i] - lower[i] * d[i-1]) / denom
+    out = np.empty(n, dtype=float)
+    out[-1] = d[-1]
+    for i in range(n-2, -1, -1):
+        out[i] = d[i] - c[i] * out[i+1]
+    return out
+
+
+def propose_gas_viscous_step(
+    disk: Dict[str, np.ndarray], dt: float, grid: Dict[str, np.ndarray],
+    params: Dict[str, Any],
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    """Conservative backward-Euler viscous evolution plus explicit dust feedback.
+
+    We evolve
+      dSigma_g/dt = -1/r d/dr [r(F_nu + Sigma_g v_feedback)],
+      F_nu = -3 A(r)/sqrt(r) d/dr (nu Sigma_g sqrt(r)),
+      v_feedback = 2 B eta v_K.
+
+    A, B, eta, nu are frozen at the *start* of the timestep. The positive
+    viscous diffusion operator is solved implicitly using an M-matrix;
+    pressure feedback is upwinded explicitly. The caller enforces an outflow
+    CFL on the resulting total gas flux before accepting this proposal.
+
+    Returns new Sigma_g, conservative total gas mass flux at edges, diagnostics.
+    No disk arrays are modified until the caller accepts the step.
+    """
+    old = disk["Sigma_g"]
+    r, re, area = grid["r"], grid["r_edge"], grid["area"]
+    n = old.size
+    A = np.asarray(disk.get("backreaction_A", np.ones_like(old)), dtype=float)
+    B = np.asarray(disk.get("backreaction_B", np.zeros_like(old)), dtype=float)
+    nu = disk["nu"]
+
+    # Only the pressure term is explicitly advected. It uses the *old* state,
+    # preserving outflow-only boundaries in the existing transport operator.
+    v_feedback = 2.0 * B * disk["eta"] * disk["v_K"]
+    rhs_feedback, flux_feedback = transport_rhs(
+        old, v_feedback, disk["D_g"], old, grid, diffusion_on=False
+    )
+    rhs = old + dt * rhs_feedback
+    if not np.all(np.isfinite(rhs)) or np.any(rhs < -1.0e-12 * np.maximum(old, 1.0e-30)):
+        raise FloatingPointError("Explicit dust-feedback gas step violates positivity; reduce dt")
+    rhs = np.maximum(rhs, 0.0)
+
+    lower = np.zeros(n)
+    diag = np.ones(n)
+    upper = np.zeros(n)
+    Ae = interp_edges(A)
+    for i in range(n-1):
+        e = i + 1
+        coeff = 3.0 * Ae[e] / (np.sqrt(re[e]) * (r[i+1] - r[i]))
+        left_factor = coeff * nu[i] * np.sqrt(r[i])
+        right_factor = coeff * nu[i+1] * np.sqrt(r[i+1])
+        interface = dt * 2.0 * PI * re[e]
+        diag[i] += interface * left_factor / area[i]
+        upper[i] -= interface * right_factor / area[i]
+        lower[i+1] -= interface * left_factor / area[i+1]
+        diag[i+1] += interface * right_factor / area[i+1]
+
+    # Inner outflow / zero-torque Robin condition: F_nu,0=-k_inner Sigma_0.
+    mode = params["gas"].get("viscous_inner_boundary", "outflow")
+    k_inner = Ae[0] * viscous_inner_outflow_coefficient(grid, nu, mode)
+    diag[0] += dt * 2.0 * PI * re[0] * k_inner / area[0]
+
+    new = _solve_tridiagonal(lower, diag, upper, rhs)
+    if not np.all(np.isfinite(new)) or np.any(new < -1.0e-11 * np.maximum(old, 1.0e-30)):
+        raise FloatingPointError("Implicit viscous gas step violated positivity")
+    new = np.maximum(new, 0.0)
+    flux_viscous = viscous_gas_flux_edges(
+        new, grid, nu, A=A, inner_boundary=mode)
+    flux_total = flux_viscous + flux_feedback
+
+    # Mass conservation must hold to floating-point precision, even at a
+    # moving feedback-generated front. The floor is accounted for separately.
+    expected = old - dt * (2.0 * PI / area) * (
+        re[1:] * flux_total[1:] - re[:-1] * flux_total[:-1]
+    )
+    err = float(np.max(np.abs(expected-new) / np.maximum(1.0, np.abs(new))))
+    if err > 1.0e-9:
+        raise FloatingPointError(f"Gas viscous flux/solution inconsistency: {err:.3e}")
+
+    floor = float(params["gas"].get("Sigma_floor", 0.0))
+    floor_add = np.maximum(floor-new, 0.0)
+    clipped = np.maximum(new, floor)
+    diagnostics = {
+        "boundary_inner_gas_disk_g": max(-2.0 * PI * re[0] * float(flux_total[0]), 0.0) * dt,
+        "boundary_outer_gas_disk_g": max(2.0 * PI * re[-1] * float(flux_total[-1]), 0.0) * dt,
+        "clipped_added_gas_disk_g": float(np.sum(area * floor_add)),
+        "max_negative_gas_disk": max(-float(np.min(new)), 0.0),
+        "clip_events_gas_disk": float(np.count_nonzero(new < floor)),
+    }
+    return clipped, flux_total, diagnostics
+
+
+def gas_flux_cfl_time(
+    Sigma_g: np.ndarray, flux: np.ndarray,
+    grid: Dict[str, np.ndarray], cfl: float,
+) -> float:
+    """Maximum timestep for an explicitly transported passive gas tracer.
+
+    Unlike a velocity-only CFL, this also resolves large diffusion-driven
+    mass fluxes generated by a steep Sigma_g gradient.
+    """
+    re, area = grid["r_edge"], grid["area"]
+    outflow = 2.0 * PI * (
+        re[1:] * np.maximum(flux[1:], 0.0)
+        + re[:-1] * np.maximum(-flux[:-1], 0.0)
+    )
+    available = area * np.maximum(Sigma_g, 0.0)
+    good = (outflow > 0.0) & (available > 0.0)
+    if not np.any(good):
+        return np.inf
+    return float(cfl) * float(np.min(available[good] / outflow[good]))
+
+
+def gas_tracer_transport_rhs(
+    Sigma: np.ndarray,
+    gas_flux_edges: np.ndarray,
+    D: np.ndarray,
+    Sigma_g: np.ndarray,
+    grid: Dict[str, np.ndarray],
+    diffusion_on: bool,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Conservative gas-tracer transport using the actual gas mass flux.
+
+    This guarantees that a spatially constant vapor/gas mixing ratio remains
+    constant (without a phase source), even during rapid viscous evolution.
+    """
+    ratio = Sigma / np.maximum(Sigma_g, 1.0e-300)
+    left = np.zeros(len(Sigma) + 1)
+    right = np.zeros(len(Sigma) + 1)
+    left[1:] = ratio
+    right[:-1] = ratio
+    upwind = np.where(gas_flux_edges >= 0.0, left, right)
+    flux = gas_flux_edges * upwind
+    if diffusion_on:
+        r = grid["r"]
+        D_e = interp_edges(D)
+        gas_e = interp_edges(Sigma_g)
+        derivative = np.zeros(len(Sigma)+1)
+        derivative[1:-1] = (ratio[1:]-ratio[:-1])/(r[1:]-r[:-1])
+        flux -= D_e * gas_e * derivative
+    re, area = grid["r_edge"], grid["area"]
+    rhs = -2.0 * PI / area * (re[1:] * flux[1:] - re[:-1] * flux[:-1])
+    return rhs, flux
+
+
+def update_gas_surface_density_prescribed(
     disk: Dict[str, np.ndarray], dt: float, grid: Dict[str, np.ndarray],
     params: Dict[str, Any], return_diagnostics: bool = False,
 ):
@@ -2390,8 +2643,11 @@ def refresh_disk_after_sigma_update(
     nu = disk["nu"]
 
     if gas["velocity_mode"] == "viscous":
-        # Simple prescribed inflow approximation.
-        v_g = -1.5 * nu / r
+        if gas.get("update_gas", True) and gas.get("evolution_mode", "viscous_diffusion") == "viscous_diffusion":
+            v_g = gas_viscous_velocity_from_flux(
+                Sigma_g, grid, nu, gas.get("viscous_inner_boundary", "outflow"))
+        else:
+            v_g = -1.5 * nu / r
     elif gas["velocity_mode"] == "zero":
         v_g = np.zeros_like(r)
     elif gas["velocity_mode"] == "constant":
@@ -2467,6 +2723,13 @@ def compute_timestep(
     vmax = np.abs(disk["v_g"]).copy()
     for carrier in CARRIERS:
         vmax = np.maximum(vmax, np.abs(carrier_coeff[carrier]["v"]))
+    # For full viscous gas evolution, A*v_visc and v_feedback may nearly
+    # cancel; the explicit pressure-feedback term needs its own CFL bound.
+    if (bool(params["gas"].get("update_gas", False))
+        and params["gas"].get("evolution_mode", "viscous_diffusion") == "viscous_diffusion"):
+        B = disk.get("backreaction_B", np.zeros_like(vmax))
+        v_feedback = 2.0 * B * disk["eta"] * disk["v_K"]
+        vmax = np.maximum(vmax, np.abs(v_feedback))
     mask_v = vmax > 0.0
     dt_adv = float(num["cfl_advective"]) * float(np.min(dr[mask_v] / vmax[mask_v])) if np.any(mask_v) else np.inf
     Dmax = (disk["D_g"].copy() if bool(params["volatiles"]["include_vapor_diffusion"])
@@ -2490,6 +2753,7 @@ def transport_step(
     state: Dict[str, np.ndarray], dt: float, grid: Dict[str, np.ndarray],
     disk: Dict[str, np.ndarray], carrier_coeff: Dict[str, Dict[str, np.ndarray]],
     params: Dict[str, Any], return_diagnostics: bool = False,
+    gas_flux_edges: Optional[np.ndarray] = None,
 ):
     Sigma_g = disk["Sigma_g"]
     new_state = {k: v.copy() for k, v in state.items()}
@@ -2511,7 +2775,10 @@ def transport_step(
 
     vapor_diffusion = bool(params["volatiles"]["include_vapor_diffusion"])
     for name in VAPOR_FIELDS:
-        rhs, flux = transport_rhs(state[name], disk["v_g"], disk["D_g"], Sigma_g, grid, diffusion_on=vapor_diffusion)
+        if gas_flux_edges is None:
+            rhs, flux = transport_rhs(state[name], disk["v_g"], disk["D_g"], Sigma_g, grid, diffusion_on=vapor_diffusion)
+        else:
+            rhs, flux = gas_tracer_transport_rhs(state[name], gas_flux_edges, disk["D_g"], Sigma_g, grid, diffusion_on=vapor_diffusion)
         new_state[name] = state[name] + dt * rhs
         record_flux(name, flux)
     for carrier in CARRIERS:
@@ -2652,6 +2919,7 @@ def write_snapshot_1d(
         "T_mid_K": disk["T_mid"],
         "H_over_r": disk["H"] / grid["r"],
         "v_g_cm_s": disk["v_g"],
+        "v_g_visc_cm_s": disk["v_g_visc"],
         "eta": disk["eta"],
         "D_g_cm2_s": disk["D_g"],
     }
@@ -2846,7 +3114,8 @@ def diagnostics_fieldnames() -> list[str]:
             f"initial_capacity_to_gas_{species}_mearth", f"current_capacity_to_gas_{species}_mearth",
             f"cum_capacity_to_gas_{species}_mearth", f"total_capacity_to_gas_{species}_mearth",
         ]
-    base += ["dt_min_yr", "dt_max_yr", "dt_mean_yr", "n_steps", "n_advective_limited", "n_diffusive_limited", "n_max_timestep_limited", "n_output_limited"]
+    base += ["gas_mass_balance_residual_mearth", "gas_mass_balance_residual_fraction"]
+    base += ["dt_min_yr", "dt_max_yr", "dt_mean_yr", "n_steps", "n_advective_limited", "n_diffusive_limited", "n_max_timestep_limited", "n_output_limited", "n_gas_flux_limited"]
     return base
 
 
@@ -2920,6 +3189,7 @@ def append_diagnostics(
         "dt_mean_yr": (runtime["dt_sum_s"] / max(runtime["n_steps"], 1)) / YR, "n_steps": runtime["n_steps"],
         "n_advective_limited": runtime["limiter_counts"].get("advective", 0), "n_diffusive_limited": runtime["limiter_counts"].get("diffusive", 0),
         "n_max_timestep_limited": runtime["limiter_counts"].get("max_timestep", 0), "n_output_limited": runtime["limiter_counts"].get("output", 0),
+        "n_gas_flux_limited": runtime["limiter_counts"].get("gas_flux", 0),
     })
 
     for target in ("CO", "CO2", "H2O", "pebble_solids", "small_solids", "gas_disk"):
@@ -2945,6 +3215,16 @@ def append_diagnostics(
         residual = current[species] + boundary - initial[species] - clipped
         row[f"mass_balance_residual_{species}_mearth"] = residual / MEARTH
         row[f"mass_balance_residual_fraction_{species}"] = residual / max(initial[species], 1.0e-300)
+
+    # Independent bulk-gas mass ledger (outflow and floor additions).
+    initial_gas = runtime["initial_gas_mass_g"]
+    current_gas = annulus_integral_sigma(area, disk["Sigma_g"])
+    gas_lost = (scalar.get("boundary_inner_gas_disk_g", 0.0)
+                + scalar.get("boundary_outer_gas_disk_g", 0.0))
+    gas_floor_added = scalar.get("clipped_added_gas_disk_g", 0.0)
+    gas_residual = current_gas + gas_lost - initial_gas - gas_floor_added
+    row["gas_mass_balance_residual_mearth"] = gas_residual / MEARTH
+    row["gas_mass_balance_residual_fraction"] = gas_residual / max(initial_gas, 1.0e-300)
 
     for channel in ("CO_at_CO2", "CO_at_H2O", "CO2_at_H2O"):
         key = f"dSigma_capacity_excess_{channel}"
@@ -3010,27 +3290,38 @@ def run(params: Dict[str, Any]) -> None:
     initialize_diagnostics(diag_path)
     update_gas = bool(params["gas"].get("update_gas", False))
     backreaction = get_backreaction_enabled(params)
+    gas_mode = params["gas"].get("evolution_mode", "viscous_diffusion")
+    full_gas = update_gas and gas_mode == "viscous_diffusion"
 
     area = grid["area"]
     runtime: Dict[str, Any] = {
         "initial_mass_g": {"CO": annulus_integral_sigma(area, total_CO(state)), "CO2": annulus_integral_sigma(area, total_CO2(state)), "H2O": annulus_integral_sigma(area, total_H2O(state))},
+        "initial_gas_mass_g": annulus_integral_sigma(area, disk["Sigma_g"]),
         "scalar": {}, "capacity_initial": capacity_initial, "capacity_cumulative": {}, "phase_errors": {},
         "dt_min_s": np.inf, "dt_max_s": 0.0, "dt_sum_s": 0.0, "n_steps": 0,
-        "limiter_counts": {"advective": 0, "diffusive": 0, "max_timestep": 0, "output": 0},
+        "limiter_counts": {"advective": 0, "diffusive": 0, "max_timestep": 0, "output": 0, "gas_flux": 0},
     }
     t = 0.0; step = 0; snap_idx = 0; next_save = 0.0; last_dt = 0.0; release_interval_dt = 0.0
     release_since_output = zero_release_integral(grid)
     release_cumulative = zero_release_integral(grid)
+
+    # The initial output and first CFL decision must describe exactly the same
+    # physical state, including the initial backreaction velocities.
+    disk = refresh_disk_after_sigma_update(grid, disk, params)
+    carrier_coeff = build_carrier_coefficients(grid, disk, params)
     br_diag: Dict[str, np.ndarray] = {}
+    if backreaction:
+        disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(state, disk, carrier_coeff, params)
+    vertical = make_vertical_structure(grid, disk, carrier_coeff, params)
     initial_release = release_output_fields(release_since_output, release_cumulative, release_interval_dt, grid)
     write_outputs(output_dir, snap_idx, step, t, last_dt, state, grid, disk, carrier_coeff, vertical, params, diag_path, initial_release, br_diag, runtime)
     snap_idx += 1; next_save += save_interval
 
     progress_every = int(params["simulation"]["progress_every"])
-    gas_mode = "evolving prescribed-inflow" if update_gas else "fixed-surface-density"
+    mode_desc = (gas_mode if update_gas else "fixed_surface_density")
     print(f"Writing outputs to: {output_dir}")
     print(f"t_end = {t_end / YR:.6g} yr, save_interval = {save_interval / YR:.6g} yr")
-    print("1+1D model: radial transport with vertically averaged snow-surface phase terms; " + f"{gas_mode} H2/He gas disk.")
+    print("1+1D model: radial transport with vertically averaged snow-surface phase terms; " + f"{mode_desc} H2/He gas disk.")
     pcfg = params["dust"]["phase_partition"]
     print("Phase model: condensation_weighting=" + str(pcfg["condensation_weighting"])
           + ", capture_mode=" + str(pcfg.get("condensation_capture_mode", "max_survival"))
@@ -3038,6 +3329,9 @@ def run(params: Dict[str, Any]) -> None:
           + ", prelimit_capacity=" + str(pcfg.get("prelimit_condensation_by_capacity", True)))
 
     while t < t_end * (1.0 - 1.0e-14):
+        # All gas/dust velocities now describe state(t) *before* selecting dt.
+        # Do not recalculate velocities between CFL and transport. Both gas and
+        # transported solids/vapors advance using the same old-state dynamics.
         raw_dt, dt_info = compute_timestep(grid, disk, carrier_coeff, params, return_diagnostics=True)
         dt = min(raw_dt, t_end - t, next_save - t if next_save > t else raw_dt)
         limiter = dt_info["limiter"]
@@ -3045,29 +3339,61 @@ def run(params: Dict[str, Any]) -> None:
             limiter = "output"
         if dt <= 0.0:
             dt = min(raw_dt, t_end - t)
-        runtime["dt_min_s"] = min(runtime["dt_min_s"], dt)
-        runtime["dt_max_s"] = max(runtime["dt_max_s"], dt)
-        runtime["dt_sum_s"] += dt
-        runtime["n_steps"] += 1
-        runtime["limiter_counts"][limiter] = runtime["limiter_counts"].get(limiter, 0) + 1
 
-        br_diag = {}
+        trial_gas_sigma = None
+        gas_flux = None
+        gas_diag = {}
+        if full_gas:
+            # The viscous part is solved implicitly. The feedback-pressure
+            # term and vapor advection are explicit; bound the *actual* gas
+            # mass flux so no tracer donor cell loses more than its inventory.
+            # Retrying shrinks dt BEFORE any state or disk field is changed.
+            for attempt in range(24):
+                try:
+                    trial_gas_sigma, gas_flux, gas_diag = propose_gas_viscous_step(
+                        disk, dt, grid, params
+                    )
+                    dt_flux = gas_flux_cfl_time(
+                        disk["Sigma_g"], gas_flux, grid,
+                        float(params["numerics"]["cfl_advective"])
+                    )
+                    if dt <= dt_flux * (1.0 + 1.0e-12):
+                        break
+                    dt = min(dt * 0.5, dt_flux * 0.9)
+                except FloatingPointError:
+                    dt *= 0.5
+                limiter = "gas_flux"
+                if not np.isfinite(dt) or dt <= 0.0:
+                    raise RuntimeError("Gas-flux timestep fell to zero")
+            else:
+                raise RuntimeError("Could not find stable gas-flux timestep after 24 attempts")
+
+        # Transport all species using precisely the velocity and Sigma_g that
+        # set dt. In full viscous mode vapors use the gas mass flux from the
+        # conservative gas solve, retaining a uniform vapor/gas mixing ratio.
+        state, transport_diag = transport_step(
+            state, dt, grid, disk, carrier_coeff, params, return_diagnostics=True,
+            gas_flux_edges=gas_flux,
+        )
+        accumulate_scalar_diagnostics(runtime["scalar"], transport_diag)
+
         if update_gas:
-            if backreaction:
-                disk = refresh_disk_after_sigma_update(grid, disk, params)
-                carrier_coeff = build_carrier_coefficients(grid, disk, params)
-                disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(state, disk, carrier_coeff, params)
-            disk, gas_diag = update_gas_surface_density(disk, dt, grid, params, return_diagnostics=True)
+            if full_gas:
+                disk["Sigma_g"] = trial_gas_sigma
+            else:
+                disk, gas_diag = update_gas_surface_density_prescribed(
+                    disk, dt, grid, params, return_diagnostics=True
+                )
             accumulate_scalar_diagnostics(runtime["scalar"], gas_diag)
 
+        # Reconstruct the vertical chemistry using gas at t+dt, then exchange
+        # phases. Backreaction is refreshed afterward to include new solids.
         disk = refresh_disk_after_sigma_update(grid, disk, params)
         carrier_coeff = build_carrier_coefficients(grid, disk, params)
         if backreaction:
             disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(state, disk, carrier_coeff, params)
         vertical = make_vertical_structure(grid, disk, carrier_coeff, params)
 
-        state, transport_diag = transport_step(state, dt, grid, disk, carrier_coeff, params, return_diagnostics=True)
-        accumulate_scalar_diagnostics(runtime["scalar"], transport_diag)
         before_phase = {key: value.copy() for key, value in state.items()}
         state, capacity_step = phase_relaxation_step(state, dt, vertical, params, return_diagnostics=True)
         phase_errors = check_phase_conservation(before_phase, state, params)
@@ -3081,6 +3407,19 @@ def run(params: Dict[str, Any]) -> None:
         release_interval_dt += dt
         t += dt; step += 1; last_dt = dt
 
+        # Phase exchange changes dust mass and hence backreaction. Refresh
+        # velocity diagnostics before the next CFL estimate and output.
+        if backreaction:
+            disk = refresh_disk_after_sigma_update(grid, disk, params)
+            carrier_coeff = build_carrier_coefficients(grid, disk, params)
+            disk, carrier_coeff, br_diag = apply_dust_backreaction_to_velocities(state, disk, carrier_coeff, params)
+
+        runtime["dt_min_s"] = min(runtime["dt_min_s"], dt)
+        runtime["dt_max_s"] = max(runtime["dt_max_s"], dt)
+        runtime["dt_sum_s"] += dt
+        runtime["n_steps"] += 1
+        runtime["limiter_counts"][limiter] = runtime["limiter_counts"].get(limiter, 0) + 1
+
         if t >= next_save - 1.0e-9 * save_interval or t >= t_end * (1.0 - 1.0e-14):
             fields = release_output_fields(release_since_output, release_cumulative, release_interval_dt, grid)
             write_outputs(output_dir, snap_idx, step, t, last_dt, state, grid, disk, carrier_coeff, vertical, params, diag_path, fields, br_diag, runtime)
@@ -3092,7 +3431,7 @@ def run(params: Dict[str, Any]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="1+1D mixed-ice volatile transport model with optional prescribed gas evolution."
+        description="1+1D mixed-ice volatile transport with full viscous or prescribed gas evolution."
     )
     parser.add_argument("params", type=str, help="Path to YAML parameter file.")
     return parser.parse_args()

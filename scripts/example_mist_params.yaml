@@ -5,7 +5,7 @@
 #
 # This configuration is for the basic fiducial model:
 #   - 1D radial Eulerian volatile transport
-#   - optional prescribed-inflow evolution of the H2/He gas surface density
+#   - full viscous diffusion of H2/He gas by default (legacy inflow optional)
 #   - two solid carriers: pebbles + small grains
 #   - vertical snow surfaces via T(r,z) and shielding A_V(r,z)
 #   - phase source terms use carrier-weighted vertical survival fractions
@@ -61,9 +61,24 @@ gas:
   velocity_mode: viscous
   constant_v_g_cm_s: 0.0
 
-  # Advect Sigma_g with the prescribed radial gas velocity. This is not the
-  # full viscous diffusion equation.
+  # Evolve bulk H2/He gas? When false, gas surface density remains fixed,
+  # but backreaction may still modify the prescribed gas velocity experienced
+  # by vapor and dust.
   update_gas: true
+
+  # viscous_diffusion (DEFAULT): full 1D Keplerian Pringle diffusion equation,
+  # modified by dust backreaction (A*v_visc + 2*B*eta*v_K). The viscous term
+  # is integrated implicitly, with no-viscous-flux outer boundary;
+  # feedback advection remains explicit and CFL-limited.
+  # prescribed_advection: old Sigma_g advection with v_visc = -3*nu/(2*r),
+  # plus optional dust feedback; for reproducing older calculations.
+  evolution_mode: viscous_diffusion
+
+  # outflow: standard accretion-speed mass outflow at r_in, avoiding a stiff
+  # initial zero-torque boundary layer in the innermost finite-volume cell.
+  # zero_torque: nu*Sigma*sqrt(r)=0 at the inner domain edge (more stringent
+  # but may force significantly shorter tracer timesteps).
+  viscous_inner_boundary: outflow
   Sigma_floor: 1.0e-30
 
 dust:
@@ -74,7 +89,7 @@ dust:
       stokes_mode: constant
       St: 0.03
 
-      # Used only if stokes_mode: epstein
+      # Also sets condensation surface area for this carrier even if St is fixed.
       grain_size_cm: 0.1
       rho_s_g_cm3: 1.5
 
@@ -88,7 +103,7 @@ dust:
       stokes_mode: constant
       St: 0.0001
 
-      # Used only if stokes_mode: epstein
+      # Also sets condensation surface area for this carrier even if St is fixed.
       grain_size_cm: 0.0001
       rho_s_g_cm3: 1.5
 
@@ -131,11 +146,11 @@ dust:
     # The final capacity operator still checks/rejects inherited oversaturation.
     prelimit_condensation_by_capacity: true
 
-    # If true (fiducial), gas may be sequestered again into matrix-associated
+    # If true, gas may be sequestered again into matrix-associated
     # reservoirs wherever those reservoirs are locally stable.
     # If false, the t=0 mixed-ice inventory is inherited and can only be lost;
     # released CO/CO2 may recondense only as pure ice.
-    allow_resequestration: true
+    allow_resequestration: false
 
   # Backreaction
   backreaction:
