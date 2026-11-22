@@ -993,6 +993,34 @@ def make_final_1d_plots(df: pd.DataFrame, analysis_dir: Path, snap_index: int,
     savefig(f"{analysis_dir}/final_c_o_profiles.pdf")
     
     plt.figure(figsize=(7.8, 5.2))
+    i = 0
+    this_color_list = color_list[:]
+    for col, label in [
+        ("C_over_O_gas", "Gas C/O"),
+        ("C_over_O_solid", "Solid C/O"),
+        ("C_over_O_pebble", "Pebble C/O"),
+        ("C_over_O_small", "Small-grain C/O"),
+        # ("hidden_CO_fraction", "matrix-associated CO fraction"),
+        # ("gas_CO_fraction", "gas CO fraction"),
+        # ("C_over_H_pebble", "pebble volatile C/H"),
+        # ("C_over_H_small", "small-grain volatile C/H"),
+        # ("C_over_H_gas", "gas C/H"),
+        # ("O_over_H_pebble", "pebble volatile O/H"),
+        # ("O_over_H_small", "small-grain volatile O/H"),
+        # ("O_over_H_gas", "gas O/H"),
+    ]:
+        if col in df.columns:
+            this_color_list = get_color_list(this_color_list, i)
+            plt.semilogx(r, df[col], label=label, color=this_color_list[i])
+            i += 1
+    plt.xlabel("Radius [au]")
+    plt.ylabel("C/O Ratio")
+    plt.title(f"C/O Ratios")#, snapshot {snap_index}")
+    plt.legend(ncols=2, fontsize=8)
+    plt.grid(True, which="both", alpha=0.3)
+    savefig(f"{analysis_dir}/final_c_o_ratios.pdf")
+    
+    plt.figure(figsize=(7.8, 5.2))
 
     this_color_list = color_list[:]
     for col, label in [
@@ -2109,6 +2137,17 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         overlay=None,
         vmin=1e-6, vmax=1e0,
     )
+    
+    print("Plotting hidden CO")
+    pcolor_r_z(
+        r, z_over_r, hidden_co,
+        f"Spatial distribution of sequestered CO",# snapshot {snap_index}",
+        r"$\Sigma_{\mathrm{CO,\,matrix}}$ [g cm$^{-2}$]",
+        Path(f"{analysis_dir}/selected_2d_co_hidden_sigma.pdf"),
+        log_value=True,
+        overlay=None,
+        vmin=1e-10, vmax=1e-2,
+    )
 
     solid_tot = (
         data["surfbin_CO_pure_ice_pebble"]
@@ -2586,6 +2625,29 @@ def make_paper_cumulative_release_profile(
     ax.set_xlabel("Radius [au]")
     ax.set_ylabel(r"$dM_{\rm ice,gross}^{\rm cum}/d\ln r$ [$M_\oplus$]")
     ax.set_title("Cumulative gross loss from volatile-ice reservoirs")
+    ax.legend(frameon=True)
+    ax.grid(True, which="both", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(Path(analysis_dir) / "paper_cumulative_release_dlnr_profile.pdf", dpi=240)
+    plt.close(fig)
+
+
+    fig, ax = plt.subplots(figsize=(8.6, 4.8))
+    for column, channel in channels:
+        if column not in cumulative:
+            continue
+        profile = cumulative[column] /  MEARTH
+        ax.semilogx(
+            r,
+            profile,
+            label=VOL_CHANNEL_LABELS[channel],
+            color=VOL_CHANNEL_COLORS[channel],
+            linewidth=2.0,
+        )
+
+    ax.set_xlabel("Radius [au]")
+    ax.set_ylabel(r"Cumulative gross release per radial bin [$M_\oplus$]")
+    ax.set_title("Radial distribution of ice-reservoir loss")
     ax.legend(frameon=True)
     ax.grid(True, which="both", alpha=0.25)
     fig.tight_layout()
