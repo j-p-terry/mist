@@ -87,7 +87,7 @@ dust:
       # Pebbles dominate volatile mass transport.
       # constant or epstein
       stokes_mode: constant
-      St: 0.03
+      St: 0.01
 
       # Also sets condensation surface area for this carrier even if St is fixed.
       grain_size_cm: 0.1
