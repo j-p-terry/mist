@@ -1955,7 +1955,7 @@ def pcolor_r_z_on_axis(
             if not plot_entrap_surface and "pure" in name:
                 name = name.split("pure ")[1]
             ax.plot(r, surf, label=name, color=ice_color_list[i], linewidth=1.4)
-        ax.legend(fontsize=8, ncols=2, frameon=True)
+        ax.legend(fontsize=14, ncols=2, frameon=True)
 
     label = rf"{log_prefix}({cb_label})" if log_prefix else cb_label
     return mesh, label
@@ -2008,13 +2008,21 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
     r = data["r_au"]
     z_over_r = data["z_over_r"]
 
+    snow_label_map = {
+        "CO_pure": "CO",
+        "CO_at_CO2": r"CO@CO$_2$",
+        "CO_at_H2O": r"CO@H$_2$O",
+        "CO2_pure": r"CO$_2$",
+        "CO2_at_H2O": r"CO$_2$@H$_2$O",
+        "H2O": r"H$_2$O",
+    }
     overlay = {}
-    for key in ["CO_pure", "CO_at_CO2", "CO_at_H2O", "CO2_pure", "CO2_at_H2O", "H2O"]:
+    for key, label in snow_label_map.items():
         k = f"snow_surface_z_over_r_{key}"
         if not plot_entrap_surface and "_at_" in key:
             continue
         if k in data:
-            overlay[key] = data[k]
+            overlay[label] = data[k]
 
     print("Plotting snow surfaces")
     pcolor_r_z(
@@ -2145,7 +2153,7 @@ def make_2d_plots(data: Dict[str, np.ndarray], analysis_dir: Path, snap_index: i
         r"$\Sigma_{\mathrm{CO,\,matrix}}$ [g cm$^{-2}$]",
         Path(f"{analysis_dir}/selected_2d_co_hidden_sigma.pdf"),
         log_value=True,
-        overlay=None,
+        overlay=overlay,
         vmin=1e-10, vmax=1e-2,
     )
 
