@@ -3,7 +3,7 @@
 # Run with:
 #   python mixed_ice_transport_1p1d.py example_mist_params.yaml
 #
-# This configuration is for the basic fiducial model:
+# Example: inherited mixed ice with an imposed 20-au viscosity gap:
 #   - 1D radial Eulerian volatile transport
 #   - full viscous diffusion of H2/He gas by default (legacy inflow optional)
 #   - two solid carriers: pebbles + small grains
@@ -16,7 +16,7 @@
 simulation:
   name: mixed_ice_1p1d_example
   # Separate output path: never overwrite the previous fiducial run.
-  output_dir: mixed_ice_1p1d_outputs
+  output_dir: high_st_full_fiducial_fixed
   t_end_yr: 1000000.0
 
   # If save_interval_yr is null, save_interval_fraction is used.
@@ -74,6 +74,20 @@ gas:
   # plus optional dust feedback; for reproducing older calculations.
   evolution_mode: viscous_diffusion
 
+  # Optional stationary Dullemond-style Gaussian viscosity enhancement.
+  # This makes a depleted gas gap and, if sufficiently strong, a pressure
+  # maximum on its outer shoulder. It is NOT a prescribed planet torque.
+  # Requires update_gas: true and evolution_mode: viscous_diffusion.
+  gap:
+    enabled: false
+    center_au: 20.0
+    width_mode: scale_height  # scale_height (width_H*H at gap), or au
+    width_H: 2.0              # Gaussian standard deviation, not FWHM
+    width_au: 2.0             # used only if width_mode: au
+    viscosity_factor: 10.0    # alpha_visc(r_gap) / background alpha
+    initial_profile: inverse_viscosity  # initial pre-formed gas gap; or smooth
+    diffusion_follows_viscosity: false  # keep dust/vapor diffusion at base alpha
+
   # outflow: standard accretion-speed mass outflow at r_in, avoiding a stiff
   # initial zero-torque boundary layer in the innermost finite-volume cell.
   # zero_torque: nu*Sigma*sqrt(r)=0 at the inner domain edge (more stringent
@@ -87,10 +101,9 @@ dust:
       # Pebbles dominate volatile mass transport.
       # constant or epstein
       stokes_mode: constant
-      St: 0.01
-
+      St: 0.1
       # Also sets condensation surface area for this carrier even if St is fixed.
-      grain_size_cm: 0.1
+      grain_size_cm: 1.0
       rho_s_g_cm3: 1.5
 
       schmidt: 1.0
@@ -146,11 +159,18 @@ dust:
     # The final capacity operator still checks/rejects inherited oversaturation.
     prelimit_condensation_by_capacity: true
 
-    # If true, gas may be sequestered again into matrix-associated
+    # If true (fiducial), gas may be sequestered again into matrix-associated
     # reservoirs wherever those reservoirs are locally stable.
     # If false, the t=0 mixed-ice inventory is inherited and can only be lost;
     # released CO/CO2 may recondense only as pure ice.
     allow_resequestration: false
+
+    # New elapsed-time ice processing (fixes repeated S_mean**N depletion).
+    # Exposed but midplane-cold ice can be processed through vertical cycling.
+    # t_mix = vertical_mixing_timescale_factor/(alpha_z*Omega).
+    ice_loss_mode: mixing_limited  # mixing_limited or thermal_only
+    vertical_mixing_timescale_factor: 1.0
+    vertical_exposure_efficiency: 1.0
 
   # Backreaction
   backreaction:

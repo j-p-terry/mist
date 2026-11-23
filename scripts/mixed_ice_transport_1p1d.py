@@ -6,10 +6,16 @@ What this does
 - Radial transport is Eulerian and 1D in surface density.
 - Bulk gas evolves by conservative viscous diffusion (default) with optional
   dust backreaction; legacy prescribed-inflow advection remains selectable.
+- Optional stationary Gaussian viscosity enhancement creates a gas gap and
+  (if strong enough) a pressure maximum at its outer edge; its initial gas
+  depression and dust diffusion treatment are separately configurable.
 - Viscous diffusion is implicit; pressure-feedback transport is explicitly
   CFL limited. Gas-phase volatiles share the exact bulk-gas interface flux.
 - Phase changes are informed by a prescribed vertical structure T(r,z),
     shielding A_V(r,z), and carrier-dependent dust scale heights.
+- In history-preserving runs, rapid midplane thermal release and slow
+    vertical exposure/mixing are integrated using physical elapsed time,
+    never by repeatedly multiplying existing ice by mean survival.
 - Two solid carriers are included:
         1. pebbles: settled, fast radial drift, dominate mass transport
         2. small grains: vertically extended, nearly gas-coupled, dominate
@@ -262,6 +268,22 @@ DEFAULTS: Dict[str, Any] = {
         # Viscous flux is zero at the outer edge. Dust-feedback flow can leave
         # either edge, but not enter from outside.
         "viscous_inner_boundary": "outflow",
+        # Persistent, stationary viscosity enhancement representing a gas gap.
+        # This is a prescribed disk substructure, not a planet torque.
+        "gap": {
+            "enabled": False,
+            "center_au": 20.0,
+            "width_mode": "scale_height",  # scale_height or au
+            "width_H": 2.0,             # Gaussian sigma in H(r_gap)
+            "width_au": 2.0,            # used only when width_mode: au
+            "viscosity_factor": 10.0,   # peak alpha_visc / alpha_background
+            # inverse_viscosity starts with a pre-formed gas gap: Sigma_g ~ 1/alpha_visc
+            # smooth starts with the unperturbed Sigma_g and lets the gap emerge.
+            "initial_profile": "inverse_viscosity",  # or smooth
+            # Off by default: don't conflate gas angular-momentum transport
+            # with dust/vapor turbulent diffusion or vertical stirring.
+            "diffusion_follows_viscosity": False,
+        },
         "Sigma_floor": 1.0e-30,
     },
     "dust": {
@@ -319,6 +341,14 @@ DEFAULTS: Dict[str, Any] = {
             # vapor can recondense as pure ice but cannot be re-sequestered into
             # CO@CO2, CO@H2O, or CO2@H2O after t=0.
             "allow_resequestration": True,
+            # Loss of pre-existing pure and matrix-associated ices:
+            # midplane thermal instability is relaxed rapidly; exposure to
+            # warm/unshielded upper layers is processed over a physical
+            # vertical-mixing time, NOT once per numerical timestep.
+            # 'thermal_only' disables the slow vertical-processing channel.
+            "ice_loss_mode": "mixing_limited",  # mixing_limited or thermal_only
+            "vertical_mixing_timescale_factor": 1.0,  # t_mix=factor/(alpha_z*Omega)
+            "vertical_exposure_efficiency": 1.0,  # 0..1, uncertain processing efficiency
         },
         "backreaction": {
             "enabled": False,
@@ -479,6 +509,35 @@ def validate_params(p: Dict[str, Any]) -> None:
     if p["gas"].get("viscous_inner_boundary", "outflow") not in {"outflow", "zero_torque"}:
         raise ValueError("gas.viscous_inner_boundary must be 'outflow' or 'zero_torque'")
 
+    # The Gaussian alpha enhancement must be applied by the *viscous* gas solver;
+    # otherwise it cannot maintain a self-consistent gap or pressure maximum.
+    gap = p["gas"].get("gap", {})
+    if not isinstance(gap, dict):
+        raise ValueError("gas.gap must be a mapping")
+    if not isinstance(gap.get("enabled", False), bool):
+        raise ValueError("gas.gap.enabled must be boolean")
+    if gap.get("enabled", False):
+        if not p["gas"].get("update_gas", True) or p["gas"].get("evolution_mode") != "viscous_diffusion":
+            raise ValueError("gas.gap.enabled requires update_gas: true and evolution_mode: viscous_diffusion")
+        if p["gas"].get("velocity_mode") != "viscous":
+            raise ValueError("gas.gap.enabled requires velocity_mode: viscous")
+        center = float(gap.get("center_au", 20.0))
+        if not float(p["grid"]["r_in_au"]) < center < float(p["grid"]["r_out_au"]):
+            raise ValueError("gas.gap.center_au must lie inside the radial grid")
+        if gap.get("width_mode", "scale_height") not in {"scale_height", "au"}:
+            raise ValueError("gas.gap.width_mode must be 'scale_height' or 'au'")
+        if gap.get("width_mode", "scale_height") == "scale_height":
+            if float(gap.get("width_H", 2.0)) <= 0:
+                raise ValueError("gas.gap.width_H must be positive")
+        elif float(gap.get("width_au", 2.0)) <= 0:
+            raise ValueError("gas.gap.width_au must be positive")
+        if not np.isfinite(float(gap.get("viscosity_factor", 10.0))) or float(gap.get("viscosity_factor", 10.0)) < 1.0:
+            raise ValueError("gas.gap.viscosity_factor must be finite and >= 1")
+        if gap.get("initial_profile", "inverse_viscosity") not in {"smooth", "inverse_viscosity"}:
+            raise ValueError("gas.gap.initial_profile must be 'smooth' or 'inverse_viscosity'")
+        if not isinstance(gap.get("diffusion_follows_viscosity", False), bool):
+            raise ValueError("gas.gap.diffusion_follows_viscosity must be boolean")
+
     for carrier in CARRIERS:
         cfg = p["dust"]["carriers"][carrier]
         if cfg["stokes_mode"] not in {"constant", "epstein"}:
@@ -508,6 +567,14 @@ def validate_params(p: Dict[str, Any]) -> None:
         raise ValueError("dust.phase_partition.preserve_carrier_history must be boolean.")
     if phase_partition_cfg.get("allow_resequestration", True) not in {True, False}:
         raise ValueError("dust.phase_partition.allow_resequestration must be boolean.")
+    if phase_partition_cfg.get("ice_loss_mode", "mixing_limited") not in {"mixing_limited", "thermal_only"}:
+        raise ValueError("dust.phase_partition.ice_loss_mode must be mixing_limited or thermal_only")
+    if not np.isfinite(float(phase_partition_cfg.get("vertical_mixing_timescale_factor", 1.0))) or float(phase_partition_cfg.get("vertical_mixing_timescale_factor", 1.0)) <= 0.0:
+        raise ValueError("vertical_mixing_timescale_factor must be finite and > 0")
+    if not 0.0 <= float(phase_partition_cfg.get("vertical_exposure_efficiency", 1.0)) <= 1.0:
+        raise ValueError("vertical_exposure_efficiency must be in [0, 1]")
+    if not 0.0 <= float(p["vertical"].get("alpha_z", 0.001)):
+        raise ValueError("vertical.alpha_z must be nonnegative")
 
     condensation_weighting = str(
         phase_partition_cfg.get("condensation_weighting", "surface_area")
@@ -683,6 +750,39 @@ def gas_shape(r: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
     return shape
 
 
+def gaussian_viscosity_gap(
+    grid: Dict[str, np.ndarray],
+    params: Dict[str, Any],
+    H: np.ndarray,
+) -> Tuple[np.ndarray, float]:
+    """Stationary Gaussian *viscosity enhancement* and its width [cm].
+
+    alpha_visc(r) = alpha0 * [1 + (factor-1) * exp(-(r-r_gap)^2/(2*w^2))].
+    The perturbation is imposed on angular-momentum transport, not on the
+    temperature profile. Its steady response is a depleted gas surface density
+    and, for sufficiently strong/narrow gaps, a pressure maximum on the outer
+    gap shoulder. The pressure maximum's radius is *not* r_gap.
+
+    Default width is 2 H_g(r_gap); dust turbulent diffusion and vertical
+    settling remain tied to their independent coefficients by default.
+    """
+    r = grid["r"]
+    gap = params["gas"].get("gap", {})
+    if not gap.get("enabled", False):
+        return np.ones_like(r), 0.0
+
+    center_cm = float(gap["center_au"]) * AU
+    if gap.get("width_mode", "scale_height") == "au":
+        width_cm = float(gap["width_au"]) * AU
+    else:
+        width_cm = float(gap["width_H"]) * float(np.interp(center_cm, r, H))
+    factor = float(gap["viscosity_factor"])
+    profile = 1.0 + (factor - 1.0) * np.exp(
+        -0.5 * ((r - center_cm) / width_cm) ** 2
+    )
+    return profile, width_cm
+
+
 def viscous_inner_outflow_coefficient(
     grid: Dict[str, np.ndarray], nu: np.ndarray, mode: str,
 ) -> float:
@@ -750,9 +850,6 @@ def build_fixed_disk(grid: Dict[str, np.ndarray], params: Dict[str, Any]) -> Dic
     gas = params["gas"]
 
     shape = gas_shape(r, params)
-    m_target = float(gas["M_gas_msun"]) * MSUN
-    sigma_norm = m_target / np.sum(area * shape)
-    Sigma_g = sigma_norm * shape
 
     temp = gas["temperature"]
     T0 = float(temp["T0_K"])
@@ -766,7 +863,21 @@ def build_fixed_disk(grid: Dict[str, np.ndarray], params: Dict[str, Any]) -> Dic
     v_K = r * Omega
     c_s = np.sqrt(KB * T_mid / (float(gas["mu"]) * M_H))
     H = c_s / Omega
-    nu = float(gas["alpha"]) * c_s * H
+    nu_background = float(gas["alpha"]) * c_s * H
+    gap_factor, gap_width_cm = gaussian_viscosity_gap(grid, params, H)
+    nu = nu_background * gap_factor
+    alpha_visc = float(gas["alpha"]) * gap_factor
+
+    # Optional initialized gap: quasi-steady Sigma~1/nu *relative to the
+    # original profile*, renormalized to preserve the requested total gas mass.
+    # This avoids introducing a large artificial t=0 gap-clearing transient.
+    # It is approximate, as the base tapered disk is not exactly steady.
+    gap_cfg = gas.get("gap", {})
+    if gap_cfg.get("enabled", False) and gap_cfg.get("initial_profile", "inverse_viscosity") == "inverse_viscosity":
+        shape = shape / gap_factor
+    m_target = float(gas["M_gas_msun"]) * MSUN
+    sigma_norm = m_target / np.sum(area * shape)
+    Sigma_g = sigma_norm * shape
 
     if gas["velocity_mode"] == "viscous":
         if gas.get("update_gas", True) and gas.get("evolution_mode", "viscous_diffusion") == "viscous_diffusion":
@@ -783,10 +894,19 @@ def build_fixed_disk(grid: Dict[str, np.ndarray], params: Dict[str, Any]) -> Dic
     P_mid = rho_mid * c_s**2
     dlnP_dlnr = np.gradient(np.log(P_mid), np.log(r), edge_order=2)
     eta = -0.5 * (c_s / v_K) ** 2 * dlnP_dlnr
-    D_g = float(gas["alpha"]) * c_s * H / float(gas["schmidt_gas"])
+    # The viscosity enhancement is NOT automatically a change to turbulent
+    # particle diffusion: the two can represent different physical processes.
+    if gap_cfg.get("enabled", False) and gap_cfg.get("diffusion_follows_viscosity", False):
+        D_g = nu / float(gas["schmidt_gas"])
+    else:
+        D_g = nu_background / float(gas["schmidt_gas"])
 
     return {
         "Sigma_g": Sigma_g,
+        "nu_background": nu_background,
+        "gap_viscosity_factor": gap_factor,
+        "gap_width_au": gap_width_cm / AU,
+        "alpha_visc": alpha_visc,
         "T_mid": T_mid,
         "Omega": Omega,
         "v_K": v_K,
@@ -1714,6 +1834,18 @@ def make_vertical_structure(
         vol["H2O"]["transition_width_K"],
     ) * shield
 
+    # Midplane thermal stability is a distinct quantity from vertically
+    # averaged ice survival. The latter contains upper-layer exposure and must
+    # not be multiplied into an inherited ice inventory at every timestep.
+    midplane_thermal_survival: Dict[str, np.ndarray] = {
+        "CO_pure": smooth_ice_fraction(T_mid, vol["CO"]["release_temperatures_K"]["pure"], vol["CO"]["transition_widths_K"]["pure"]),
+        "CO_at_CO2": smooth_ice_fraction(T_mid, vol["CO"]["release_temperatures_K"]["at_CO2"], vol["CO"]["transition_widths_K"]["at_CO2"]),
+        "CO_at_H2O": smooth_ice_fraction(T_mid, vol["CO"]["release_temperatures_K"]["at_H2O"], vol["CO"]["transition_widths_K"]["at_H2O"]),
+        "CO2_pure": smooth_ice_fraction(T_mid, vol["CO2"]["release_temperatures_K"]["pure"], vol["CO2"]["transition_widths_K"]["pure"]),
+        "CO2_at_H2O": smooth_ice_fraction(T_mid, vol["CO2"]["release_temperatures_K"]["at_H2O"], vol["CO2"]["transition_widths_K"]["at_H2O"]),
+        "H2O": smooth_ice_fraction(T_mid, vol["H2O"]["release_temperature_K"], vol["H2O"]["transition_width_K"]),
+    }
+
     mean_survival: Dict[str, Dict[str, np.ndarray]] = {c: {} for c in CARRIERS}
     for carrier in CARRIERS:
         w = weights[carrier]
@@ -1739,6 +1871,8 @@ def make_vertical_structure(
         "weights": weights,
         "survival": survival,
         "mean_survival": mean_survival,
+        "midplane_thermal_survival": midplane_thermal_survival,
+        "Omega": disk["Omega"],
         "snow_surfaces_z_over_r": snow_surfaces,
     }
 
@@ -2230,6 +2364,7 @@ def _carrier_history_targets(
     *,
     allow_resequestration: bool,
     capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
+    keep_existing_ice: bool = False,
 ) -> Dict[str, np.ndarray]:
     """Carrier and optionally matrix-history-preserving phase targets.
 
@@ -2263,7 +2398,13 @@ def _carrier_history_targets(
         retained = {}
         if preserve_matrix:
             for c, field, key, _ in specs:
-                retained[field] = ms[c][key] * state[field]
+                # During evolution, physical release has ALREADY been applied
+                # using an elapsed-time exponential operator. Never remove
+                # (1-mean_survival) of the remaining ice every numerical call.
+                # At t=0, initialize thermal equilibrium at the MIDPLANE only;
+                # upper-layer exposure has not had an arbitrary time to work.
+                retained[field] = (state[field].copy() if keep_existing_ice else
+                                   vertical["midplane_thermal_survival"][key] * state[field])
         else:
             # Legacy: existing ice continuously redistributes between matrices.
             for c in CARRIERS:
@@ -2306,9 +2447,11 @@ def phase_targets_w_history(
     vertical: Dict[str, Any],
     params: Dict[str, Any],
     capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
+    keep_existing_ice: bool = False,
 ) -> Dict[str, np.ndarray]:
     return _carrier_history_targets(state, vertical, params, allow_resequestration=True,
-                                    capacity_diagnostics=capacity_diagnostics)
+                                    capacity_diagnostics=capacity_diagnostics,
+                                    keep_existing_ice=keep_existing_ice)
 
 
 def phase_targets_w_history_no_resequestration(
@@ -2316,9 +2459,11 @@ def phase_targets_w_history_no_resequestration(
     vertical: Dict[str, Any],
     params: Dict[str, Any],
     capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
+    keep_existing_ice: bool = False,
 ) -> Dict[str, np.ndarray]:
     return _carrier_history_targets(state, vertical, params, allow_resequestration=False,
-                                    capacity_diagnostics=capacity_diagnostics)
+                                    capacity_diagnostics=capacity_diagnostics,
+                                    keep_existing_ice=keep_existing_ice)
 
 
 def build_phase_targets(
@@ -2326,6 +2471,7 @@ def build_phase_targets(
     vertical: Dict[str, Any],
     params: Dict[str, Any],
     capacity_diagnostics: Optional[Dict[str, np.ndarray]] = None,
+    keep_existing_ice: bool = False,
 ) -> Dict[str, np.ndarray]:
     """Select the configured phase-target model."""
     phase_cfg = params["dust"]["phase_partition"]
@@ -2336,6 +2482,7 @@ def build_phase_targets(
             vertical,
             params,
             capacity_diagnostics=capacity_diagnostics,
+            keep_existing_ice=keep_existing_ice,
         )
 
     if bool(phase_cfg["preserve_carrier_history"]):
@@ -2344,6 +2491,7 @@ def build_phase_targets(
             vertical,
             params,
             capacity_diagnostics=capacity_diagnostics,
+            keep_existing_ice=keep_existing_ice,
         )
 
     return phase_targets(
@@ -2367,6 +2515,67 @@ def set_phase_equilibrium(
         state[name] = targets[name]
     return state
 
+def ice_loss_rate_components(
+    carrier: str,
+    key: str,
+    vertical: Dict[str, Any],
+    params: Dict[str, Any],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return thermal and mixing/exposure loss rates [s^-1] for existing ice.
+
+    Temperature-driven release in a warm midplane is rapid (tau_phase); slow
+    processing of ice in a cold disk occurs through access to vertically
+    exposed layers on t_mix = factor / (alpha_z Omega). The exposure fraction
+    is set by the difference between midplane thermal survival and the
+    carrier-weighted, thermally/shielding-limited survival fraction.
+
+    This is a deliberately simple two-timescale closure, not a full vertical
+    chemistry/photodesorption solver. It has a continuous-time limit and is
+    independent of how often the numerical phase operator is called.
+    """
+    cfg = params["dust"]["phase_partition"]
+    s_mid = np.clip(vertical["midplane_thermal_survival"][key], 0.0, 1.0)
+    s_mean = np.clip(vertical["mean_survival"][carrier][key], 0.0, 1.0)
+    tau_thermal = float(params["volatiles"]["phase_relaxation_time_yr"]) * YR
+    k_thermal = (1.0 - s_mid) / tau_thermal
+    k_vertical = np.zeros_like(s_mid)
+    if cfg.get("ice_loss_mode", "mixing_limited") == "mixing_limited":
+        alpha_z = max(0.0, float(params["vertical"]["alpha_z"]))
+        efficiency = float(cfg.get("vertical_exposure_efficiency", 1.0))
+        factor = float(cfg.get("vertical_mixing_timescale_factor", 1.0))
+        # Count the upper-layer exposure only in the fraction that has NOT
+        # already been identified as rapidly thermally unstable at midplane.
+        exposed = np.clip(s_mid - s_mean, 0.0, 1.0)
+        k_vertical = (efficiency * alpha_z / factor) * vertical["Omega"] * exposed
+    return k_thermal, k_vertical
+
+
+def apply_elapsed_time_ice_loss(
+    state: Dict[str, np.ndarray],
+    dt: float,
+    vertical: Dict[str, Any],
+    params: Dict[str, Any],
+) -> Dict[str, np.ndarray]:
+    """Release existing ice to its gas species with exact exponential kinetics.
+
+    Do not apply the extra phase-relaxation interpolation to this loss: doing
+    so would again make depletion depend on the numerical timestep.
+    """
+    for carrier in CARRIERS:
+        for field in solid_fields_for(carrier):
+            if field.startswith("ref_solid"):
+                continue
+            species = FIELD_TO_SPECIES[field]
+            k_thermal, k_vertical = ice_loss_rate_components(
+                carrier, FIELD_TO_SURVIVAL_KEY[field], vertical, params
+            )
+            fraction = -np.expm1(-dt * (k_thermal + k_vertical))
+            release = np.maximum(state[field], 0.0) * np.clip(fraction, 0.0, 1.0)
+            state[field] = np.maximum(state[field] - release, 0.0)
+            state[f"{species}_gas"] += release
+    return state
+
+
 def phase_relaxation_step(
     state: Dict[str, np.ndarray],
     dt: float,
@@ -2374,25 +2583,66 @@ def phase_relaxation_step(
     params: Dict[str, Any],
     return_diagnostics: bool = False,
 ):
-    """Relax toward phase targets and return realized capacity rejection if requested."""
+    """Release ice on physical timescales, then relax new condensation.
+
+    Crucially, pre-existing ice is NOT multiplied by its carrier-averaged
+    survival fraction every call. A physical exponential loss is applied once
+    over dt, and only deposition from the new vapor pool is phase-relaxed.
+    """
     tau = float(params["volatiles"]["phase_relaxation_time_yr"]) * YR
     fac = math.exp(-dt / tau)
-    relax_fraction = 1.0 - fac
-    capacity_target_diag: Dict[str, np.ndarray] = {}
+    relax_fraction = -math.expm1(-dt / tau)
+    phase_cfg = params["dust"]["phase_partition"]
 
-    targets = build_phase_targets(
-        state, vertical, params, capacity_diagnostics=capacity_target_diag
-    )
+    if bool(phase_cfg.get("preserve_matrix_history", True)) and bool(phase_cfg.get("preserve_carrier_history", True)):
+        # 1. Existing ice loss: continuous-time, conservative operator.
+        state = apply_elapsed_time_ice_loss(state, dt, vertical, params)
 
-    for name in ALL_FIELDS:
-        if name.startswith("ref_solid"):
-            continue
-        state[name] = targets[name] + (state[name] - targets[name]) * fac
+        # 2. Compute eligible NEW condensation on the surviving carrier ice.
+        # Using keep_existing_ice avoids the old (S_mean)**N time-step artifact.
+        capacity_target_diag: Dict[str, np.ndarray] = {}
+        targets = build_phase_targets(
+            state, vertical, params,
+            capacity_diagnostics=capacity_target_diag,
+            keep_existing_ice=True,
+        )
+        for name in ALL_FIELDS:
+            if name.startswith("ref_solid"):
+                continue
+            state[name] = state[name] + relax_fraction * (targets[name] - state[name])
+
+        # 3. Capacity is a physical upper bound even at sub-thermal dt; reject
+        # guests immediately when a host has disappeared, conserving molecules.
+        capacity_realized: Dict[str, np.ndarray] = {
+            key: relax_fraction * value for key, value in capacity_target_diag.items()
+        }
+        capacity_instant: Dict[str, np.ndarray] = {}
+        state = apply_trapping_capacity_limits(
+            state, params, diagnostics=capacity_instant,
+            force_excess_destination=("gas" if not bool(phase_cfg.get("allow_resequestration", True)) else None),
+        )
+        for key, arr in capacity_instant.items():
+            if key not in capacity_realized:
+                capacity_realized[key] = np.zeros_like(arr)
+            capacity_realized[key] += arr
+    else:
+        # Legacy redistribution, retained for the optional model that does
+        # not preserve ice/carrier history. It is NOT the fiducial closure.
+        capacity_target_diag = {}
+        targets = build_phase_targets(
+            state, vertical, params, capacity_diagnostics=capacity_target_diag
+        )
+        for name in ALL_FIELDS:
+            if name.startswith("ref_solid"):
+                continue
+            state[name] = targets[name] + (state[name] - targets[name]) * fac
+        capacity_realized = {
+            key: relax_fraction * value for key, value in capacity_target_diag.items()
+        }
 
     if not return_diagnostics:
         return state
-    realized = {key: relax_fraction * value for key, value in capacity_target_diag.items()}
-    return state, realized
+    return state, capacity_realized
 
 def check_phase_conservation(
     before: Dict[str, np.ndarray],
@@ -2655,7 +2905,10 @@ def refresh_disk_after_sigma_update(
     else:
         raise ValueError("Unknown velocity_mode")
 
-    D_g = float(gas["alpha"]) * c_s * H / float(gas["schmidt_gas"])
+    if gas.get("gap", {}).get("enabled", False) and gas["gap"].get("diffusion_follows_viscosity", False):
+        D_g = nu / float(gas["schmidt_gas"])
+    else:
+        D_g = disk["nu_background"] / float(gas["schmidt_gas"])
 
     disk["rho_mid"] = rho_mid
     disk["P_mid"] = P_mid
@@ -2922,6 +3175,9 @@ def write_snapshot_1d(
         "v_g_visc_cm_s": disk["v_g_visc"],
         "eta": disk["eta"],
         "D_g_cm2_s": disk["D_g"],
+        "nu_visc_cm2_s": disk["nu"],
+        "alpha_visc": disk["alpha_visc"],
+        "gap_viscosity_factor": disk["gap_viscosity_factor"],
     }
     
     if "backreaction_A" in disk:
@@ -2941,6 +3197,11 @@ def write_snapshot_1d(
         cols[f"snow_surface_z_over_r_{key}"] = vertical["snow_surfaces_z_over_r"][key]
         for carrier in CARRIERS:
             cols[f"mean_survival_{key}_{carrier}"] = vertical["mean_survival"][carrier][key]
+            if params is not None:
+                k_th, k_ex = ice_loss_rate_components(carrier, key, vertical, params)
+                cols[f"thermal_ice_loss_rate_yr_{key}_{carrier}"] = k_th * YR
+                cols[f"vertical_ice_loss_rate_yr_{key}_{carrier}"] = k_ex * YR
+        cols[f"midplane_thermal_survival_{key}"] = vertical["midplane_thermal_survival"][key]
 
     # Diagnostic proposal probabilities: fraction of a unit shared gas pool
     # targeting a given carrier BEFORE host-capacity rejection. They document
@@ -3322,11 +3583,25 @@ def run(params: Dict[str, Any]) -> None:
     print(f"Writing outputs to: {output_dir}")
     print(f"t_end = {t_end / YR:.6g} yr, save_interval = {save_interval / YR:.6g} yr")
     print("1+1D model: radial transport with vertically averaged snow-surface phase terms; " + f"{mode_desc} H2/He gas disk.")
+    if params["gas"].get("gap", {}).get("enabled", False):
+        gp = params["gas"]["gap"]
+        eta = disk["eta"]
+        # eta changes sign from positive to negative at a pressure minimum;
+        # negative to positive at the outer-edge pressure maximum.
+        pressure_maxima = np.where((eta[:-1] < 0.0) & (eta[1:] >= 0.0))[0]
+        center = float(gp["center_au"])
+        if pressure_maxima.size:
+            idx = pressure_maxima[np.argmin(np.abs(grid["r_au"][pressure_maxima] - center))]
+            trap = 0.5 * (grid["r_au"][idx] + grid["r_au"][idx+1])
+            print(f"Prescribed Gaussian viscosity gap: center={center:g} au, sigma={disk['gap_width_au']:.3g} au, peak factor={float(gp['viscosity_factor']):g}; initial pressure maximum ~{trap:.3g} au")
+        else:
+            print(f"WARNING: Gaussian viscosity gap at {center:g} au has NO initial pressure maximum; inspect eta(r) and gap strength/width.", file=sys.stderr)
     pcfg = params["dust"]["phase_partition"]
     print("Phase model: condensation_weighting=" + str(pcfg["condensation_weighting"])
           + ", capture_mode=" + str(pcfg.get("condensation_capture_mode", "max_survival"))
           + ", preserve_matrix_history=" + str(pcfg.get("preserve_matrix_history", True))
-          + ", prelimit_capacity=" + str(pcfg.get("prelimit_condensation_by_capacity", True)))
+          + ", prelimit_capacity=" + str(pcfg.get("prelimit_condensation_by_capacity", True))
+          + ", ice_loss_mode=" + str(pcfg.get("ice_loss_mode", "mixing_limited")))
 
     while t < t_end * (1.0 - 1.0e-14):
         # All gas/dust velocities now describe state(t) *before* selecting dt.
